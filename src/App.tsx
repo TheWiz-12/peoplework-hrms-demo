@@ -481,7 +481,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
             Connected across companies
           </div>
         </div>
-        <small>PEOPLEWORK · HUMAN RESOURCE WORKSPACE</small>
+        <small>PEOPLEWORK · BY AS COMMUNICATIONS</small>
       </section>
       <section className="login-form">
         <div>
@@ -2302,7 +2302,7 @@ export default function App() {
           )}
           <footer className="content-footer">
             <span>
-              Thoughtfully connected. <strong>Peoplework.</strong>
+              Thoughtfully connected. <strong>Peoplework by AS Communications.</strong>
             </span>
             <span>
               <ShieldCheck size={14} />
