@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n api,web \"tsx watch server/main.ts\" \"vite --host 127.0.0.1\"",
-    "build": "tsc --noEmit && vite build",
-    "start": "tsx server/main.ts",
+    "build": "tsc --noEmit && node scripts/build-server.mjs && vite build",
+    "start": "node build-server/main.js",
     "test": "tsx --test tests/*.test.ts",
     "test:ui": "playwright test",
     "db:migrate": "tsx server/migrate.ts"
