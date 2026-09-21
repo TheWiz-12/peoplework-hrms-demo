@@ -147,8 +147,15 @@ export async function migrate(db: Database) {
     };
     for (const [table, x] of Object.entries(tables)) {
       const t = table === "tenants" ? "id" : "tenant_id";
+      // The public demo seeds fictional data through the database owner. The
+      // application itself still SET ROLEs to hrms_app, where every policy is
+      // enforced. Real deployments force RLS even for the table owner.
+      const forceRls =
+        process.env.DEMO_MODE === "true"
+          ? "NO FORCE ROW LEVEL SECURITY"
+          : "FORCE ROW LEVEL SECURITY";
       await q.query(
-        `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY; ALTER TABLE ${table} FORCE ROW LEVEL SECURITY; GRANT SELECT,INSERT,UPDATE ON ${table} TO hrms_app;`,
+        `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY; ALTER TABLE ${table} ${forceRls}; GRANT SELECT,INSERT,UPDATE ON ${table} TO hrms_app;`,
       );
       const check = (action: string) =>
         `auth.can_access(${t},${x.c},${x.b},${x.e},${x.m} || '.${action}')`;
