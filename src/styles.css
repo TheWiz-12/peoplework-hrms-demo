@@ -301,6 +301,15 @@ textarea {
   color: #dc9a71;
   margin-left: -8px;
 }
+.creator-line {
+  display: block;
+  margin: 1px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
 .workspace-card {
   display: flex;
   align-items: center;

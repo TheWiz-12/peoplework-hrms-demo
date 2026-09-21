@@ -143,6 +143,18 @@ export const recordSchema = z
         dueDate: date.optional(),
         amountPaise: z.number().int().min(0).max(100000000).optional(),
         target: z.number().min(0).max(1000000).optional(),
+        visitorType: z.enum(["employee", "external"]).optional(),
+        visitorName: z.string().max(160).optional(),
+        visitorCompany: z.string().max(160).optional(),
+        issuedTo: z.string().max(160).optional(),
+        purpose: z.string().max(500).optional(),
+        checkInAt: z.string().datetime().optional(),
+        checkOutAt: z.string().datetime().optional(),
+        exitType: z.enum(["resignation", "retirement", "termination", "contract_end"]).optional(),
+        lastWorkingDay: date.optional(),
+        noticePeriod: z.number().int().min(0).max(365).optional(),
+        clearanceStatus: z.string().max(60).optional(),
+        handoverTo: z.string().max(160).optional(),
       })
       .strict()
       .default({}),

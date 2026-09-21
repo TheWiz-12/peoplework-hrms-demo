@@ -1032,6 +1032,34 @@ export default function App() {
         save: (v: any) =>
           mutate("/users", { ...v, employeeId: v.employeeId || null }),
       },
+      gatepasses: {
+        title: "Issue gate pass",
+        description: "Record whether the pass is for an employee or an external visitor, including check-in and check-out times.",
+        fields: [
+          cf, bf,
+          { key: "visitorType", label: "Issued to", type: "select", options: [{ value: "employee", label: "Company employee" }, { value: "external", label: "External visitor" }], value: "external" },
+          { key: "visitorName", label: "Person name" },
+          { key: "visitorCompany", label: "External company (if applicable)", required: false },
+          { key: "purpose", label: "Purpose / items carried", type: "textarea" },
+          { key: "checkInAt", label: "Check-in", type: "datetime-local" },
+          { key: "checkOutAt", label: "Check-out", type: "datetime-local", required: false },
+        ],
+        save: (v: any) => mutate("/records/gatepasses", { companyId: v.companyId, branchId: v.branchId, title: v.visitorName + " · " + pretty(v.visitorType) + " gate pass", data: { visitorType: v.visitorType, visitorName: v.visitorName, visitorCompany: v.visitorCompany, purpose: v.purpose, checkInAt: new Date(v.checkInAt).toISOString(), ...(v.checkOutAt ? { checkOutAt: new Date(v.checkOutAt).toISOString() } : {}) } }),
+      },
+      exits: {
+        title: "Start employee exit",
+        description: "Create an auditable exit record with the employee, exit reason, last working day and clearance owner.",
+        fields: [
+          cf, bf, ef,
+          { key: "exitType", label: "Exit type", type: "select", options: ["resignation", "retirement", "termination", "contract_end"].map((x) => ({ value: x, label: pretty(x) })), value: "resignation" },
+          { key: "lastWorkingDay", label: "Last working day", type: "date", value: today() },
+          { key: "noticePeriod", label: "Notice period (days)", type: "number", value: 30, min: 0, max: 365 },
+          { key: "handoverTo", label: "Handover to", required: false },
+          { key: "clearanceStatus", label: "Clearance status", value: "Pending" },
+          { key: "description", label: "Exit notes", type: "textarea", required: false },
+        ],
+        save: (v: any) => mutate("/records/exits", { companyId: v.companyId, branchId: v.branchId, employeeId: v.employeeId, title: "Exit · " + (employees.find((e) => e.id === v.employeeId)?.name || "Employee"), data: { exitType: v.exitType, lastWorkingDay: v.lastWorkingDay, noticePeriod: Number(v.noticePeriod), handoverTo: v.handoverTo, clearanceStatus: v.clearanceStatus, description: v.description } }),
+      },
     };
     const generic = {
       title:
@@ -1126,7 +1154,16 @@ export default function App() {
       </div>
     );
   if (!session) return <Login onLogin={boot} />;
-  const activeMenu = menu.find((m) => m.id === page)!;
+  // Some utility views (for example Audit and Access) are opened from a
+  // dashboard action instead of the left menu. Always provide a page label so
+  // those views cannot crash the renderer with an undefined menu item.
+  const activeMenu =
+    menu.find((m) => m.id === page) || {
+      id: page,
+      label: pretty(page),
+      icon: Activity,
+      group: "ADMINISTRATION",
+    };
   const visibleMenu = menu.filter(
     (m) =>
       m.id === "dashboard" ||
@@ -1241,7 +1278,10 @@ export default function App() {
           <span className="brand-mark">
             <Leaf size={23} />
           </span>
-          peoplework<span className="brand-dot">.</span>
+          <span>
+            peoplework<span className="brand-dot">.</span>
+            <small className="creator-line">by AS Communications</small>
+          </span>
         </button>
         <div className="workspace-card">
           <div className="workspace-logo">M</div>
