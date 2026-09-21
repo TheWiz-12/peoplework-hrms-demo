@@ -1,4 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
+import PlatformWorkspace from "./PlatformWorkspace";
+import EmployeeImport from "./EmployeeImport";
 import {
   LayoutDashboard,
   Users,
@@ -37,6 +39,7 @@ import {
   Settings2,
   LockKeyhole,
   Sparkles,
+  UploadCloud,
 } from "lucide-react";
 
 let csrf = "";
@@ -581,6 +584,7 @@ export default function App() {
     [toast, setToast] = useState(""),
     [refresh, setRefresh] = useState(0),
     [modal, setModal] = useState<any>(null),
+    [showImport, setShowImport] = useState(false),
     [help, setHelp] = useState(false),
     [mobileNav, setMobileNav] = useState(false),
     [question, setQuestion] = useState(""),
@@ -617,7 +621,7 @@ export default function App() {
         (!company || !g.company_id || g.company_id === company),
     );
   useEffect(() => {
-    if (!session) return;
+    if (!session || session.grants?.some((g:any)=>g.role==="platform_owner")) return;
     let active = true;
     setLoading(true);
     setError("");
@@ -1154,6 +1158,8 @@ export default function App() {
       </div>
     );
   if (!session) return <Login onLogin={boot} />;
+  if (session.grants?.some((g:any)=>g.role==="platform_owner"))
+    return <PlatformWorkspace api={api} onLogout={async()=>{await api("/session","DELETE",{});csrf="";setSession(null)}}/>;
   // Some utility views (for example Audit and Access) are opened from a
   // dashboard action instead of the left menu. Always provide a page label so
   // those views cannot crash the renderer with an undefined menu item.
@@ -1632,6 +1638,9 @@ export default function App() {
                   <p>{descriptions[page]}</p>
                 </div>
                 <div className="heading-actions">
+                  {page === "employees" && can("employees", "write") && (
+                    <button className="button secondary" onClick={() => setShowImport(true)}><UploadCloud size={16}/> Import employees</button>
+                  )}
                   {page === "payroll" && can("payroll", "write") && (
                     <button
                       className="button secondary"
@@ -2308,6 +2317,7 @@ export default function App() {
           {toast}
         </div>
       )}
+      {showImport && <EmployeeImport api={api} companies={org.companies.filter((c:any)=>(!company||company===c.id)&&session.grants.some((g:any)=>(g.permissions.includes("*")||g.permissions.includes("employees.write"))&&(!g.company_id||g.company_id===c.id)))} branches={org.branches} onClose={()=>setShowImport(false)} onImported={()=>{setToast("Employees imported successfully");setRefresh(r=>r+1)}}/>}
       <button
         className="help-launcher"
         aria-label="Open support assistant"

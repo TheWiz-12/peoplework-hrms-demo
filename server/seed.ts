@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { Database } from "./db";
+import { Database, type Q } from "./db";
 import { hashPassword } from "./security";
 import { roles } from "./domain";
 export const ids = {
   tenant: "10000000-0000-4000-8000-000000000001",
   other: "10000000-0000-4000-8000-000000000002",
+  platform: "10000000-0000-4000-8000-000000000003",
   a: "20000000-0000-4000-8000-000000000001",
   b: "20000000-0000-4000-8000-000000000002",
   c: "20000000-0000-4000-8000-000000000003",
@@ -17,10 +18,29 @@ export const ids = {
   employee: "40000000-0000-4000-8000-000000000003",
   manager: "40000000-0000-4000-8000-000000000004",
   otherAdmin: "40000000-0000-4000-8000-000000000005",
+  platformOwner: "40000000-0000-4000-8000-000000000006",
   device: "60000000-0000-4000-8000-000000000001",
 };
 export const employeeId = (i: number) =>
   `50000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+async function ensurePlatformOwner(q: Q, demoPassword: string) {
+  const ownerPassword = process.env.PLATFORM_OWNER_PASSWORD;
+  if (!ownerPassword) return;
+  if (ownerPassword.length < 16 || ownerPassword === demoPassword)
+    throw new Error("PLATFORM_OWNER_PASSWORD must be distinct and at least 16 characters");
+  await q.query("INSERT INTO tenants(id,name) VALUES($1,$2) ON CONFLICT(id) DO NOTHING", [
+    ids.platform, "AS Communications Control Plane",
+  ]);
+  await q.query("INSERT INTO platform_tenants(tenant_id) VALUES($1) ON CONFLICT DO NOTHING", [ids.platform]);
+  await q.query(
+    "INSERT INTO auth.users(id,tenant_id,email,name,password_hash) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING",
+    [ids.platformOwner, ids.platform, "owner@ascommunications.test", "AS Communications Owner", hashPassword(ownerPassword)],
+  );
+  await q.query(
+    "INSERT INTO auth.grants(id,tenant_id,user_id,role,company_id,permissions) SELECT $1,$2,$3,'platform_owner',NULL,$4 WHERE NOT EXISTS(SELECT 1 FROM auth.grants WHERE user_id=$3 AND role='platform_owner')",
+    [randomUUID(), ids.platform, ids.platformOwner, ["*"]],
+  );
+}
 export async function seed(db: Database) {
   // Supplied only through the hosting environment; demo credentials must not
   // be committed to the public repository.
@@ -28,13 +48,19 @@ export async function seed(db: Database) {
   if (!demoPassword)
     throw new Error("DEMO_PASSWORD is required when DEMO_MODE is enabled");
   await db.owner(async (q) => {
-    if ((await q.query("SELECT id FROM tenants LIMIT 1")).rows.length) return;
-    await q.query("INSERT INTO tenants VALUES ($1,$2),($3,$4)", [
+    if ((await q.query("SELECT id FROM tenants LIMIT 1")).rows.length) {
+      await ensurePlatformOwner(q, demoPassword);
+      return;
+    }
+    await q.query("INSERT INTO tenants VALUES ($1,$2),($3,$4),($5,$6)", [
       ids.tenant,
       "Meridian Group",
       ids.other,
       "Separate Tenant",
+      ids.platform,
+      "AS Communications Control Plane",
     ]);
+    await q.query("INSERT INTO platform_tenants(tenant_id) SELECT id FROM tenants ON CONFLICT DO NOTHING");
     for (const [id, t, name, code] of [
       [ids.a, ids.tenant, "Meridian Logistics", "ML"],
       [ids.b, ids.tenant, "Meridian Manufacturing", "MM"],
@@ -328,5 +354,8 @@ export async function seed(db: Database) {
       // contain a biometric credential, even for a fictional environment.
       randomUUID(),
     ]);
+    await q.query("INSERT INTO platform_tenants(tenant_id) SELECT id FROM tenants ON CONFLICT DO NOTHING");
+    await q.query("INSERT INTO platform_company_limits(company_id) SELECT id FROM companies ON CONFLICT DO NOTHING");
+    await ensurePlatformOwner(q, demoPassword);
   });
 }

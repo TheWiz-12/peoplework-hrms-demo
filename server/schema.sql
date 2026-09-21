@@ -45,7 +45,35 @@ $$;
 -- Create the relation before compiling the function on first install (migration reorders this block).
 
 CREATE TABLE IF NOT EXISTS tenants (id uuid PRIMARY KEY, name text NOT NULL);
+CREATE TABLE IF NOT EXISTS platform_tenants (
+ tenant_id uuid PRIMARY KEY REFERENCES tenants(id),
+ status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','suspended')),
+ employee_limit integer NOT NULL DEFAULT 10000 CHECK(employee_limit BETWEEN 1 AND 100000),
+ created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS companies (id uuid PRIMARY KEY, tenant_id uuid NOT NULL REFERENCES tenants(id), name text NOT NULL, code text NOT NULL, UNIQUE(tenant_id,id), UNIQUE(tenant_id,code));
+CREATE TABLE IF NOT EXISTS platform_company_limits (
+ company_id uuid PRIMARY KEY REFERENCES companies(id),
+ status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','suspended')),
+ employee_limit integer NOT NULL DEFAULT 1000 CHECK(employee_limit BETWEEN 1 AND 100000)
+);
+CREATE TABLE IF NOT EXISTS platform_audit (
+ id uuid PRIMARY KEY, actor_id uuid NOT NULL, action text NOT NULL,
+ target_id uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE FUNCTION platform_initialize_company() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+BEGIN
+ INSERT INTO platform_company_limits(company_id) VALUES(NEW.id) ON CONFLICT DO NOTHING;
+ RETURN NEW;
+END; $$;
+DROP TRIGGER IF EXISTS companies_platform_initialize ON companies;
+CREATE TRIGGER companies_platform_initialize AFTER INSERT ON companies
+FOR EACH ROW EXECUTE FUNCTION platform_initialize_company();
+REVOKE ALL ON FUNCTION platform_initialize_company() FROM PUBLIC;
+INSERT INTO platform_tenants(tenant_id) SELECT id FROM tenants ON CONFLICT DO NOTHING;
+INSERT INTO platform_company_limits(company_id) SELECT id FROM companies ON CONFLICT DO NOTHING;
+GRANT SELECT ON platform_tenants,platform_company_limits TO hrms_auth;
 CREATE TABLE IF NOT EXISTS branches (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, company_id uuid NOT NULL, name text NOT NULL, timezone text NOT NULL DEFAULT 'Asia/Kolkata', UNIQUE(tenant_id,company_id,id), FOREIGN KEY(tenant_id,company_id) REFERENCES companies(tenant_id,id));
 CREATE TABLE IF NOT EXISTS employees (
  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, company_id uuid NOT NULL, branch_id uuid NOT NULL,
@@ -150,7 +178,7 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
 -- Explicit, narrow helper privileges: FORCE RLS works without superuser-owned functions.
 GRANT USAGE ON SCHEMA public,auth TO hrms_internal;
-GRANT SELECT ON auth.users,auth.grants,auth.devices,public.team_links,public.employees,public.policies TO hrms_internal;
+GRANT SELECT ON auth.users,auth.grants,auth.devices,public.team_links,public.employees,public.policies,public.platform_tenants,public.platform_company_limits TO hrms_internal;
 GRANT INSERT ON auth.device_nonces,public.attendance TO hrms_internal;
 GRANT EXECUTE ON FUNCTION auth.can_access(uuid,uuid,uuid,uuid,text) TO hrms_internal;
 GRANT CREATE ON SCHEMA auth TO hrms_internal;
@@ -159,3 +187,48 @@ ALTER FUNCTION auth.audit_scope(uuid,uuid,uuid) OWNER TO hrms_internal;
 ALTER FUNCTION auth.leave_policy(uuid,date) OWNER TO hrms_internal;
 ALTER FUNCTION auth.ingest_event(uuid,text,timestamptz,text,text,text) OWNER TO hrms_internal;
 REVOKE CREATE ON SCHEMA auth FROM hrms_internal;
+
+-- Tenant and company revocation are applied inside the same server-side RLS
+-- helper that protects each normal HRMS record.
+CREATE OR REPLACE FUNCTION auth.can_access(t uuid, c uuid, b uuid, employee uuid, perm text)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, auth AS $$
+ SELECT EXISTS (
+   SELECT 1 FROM auth.users u JOIN auth.grants g ON g.user_id=u.id AND g.tenant_id=u.tenant_id
+   WHERE u.id = nullif(current_setting('app.actor_id', true),'')::uuid AND u.active AND u.tenant_id=t
+   AND NOT EXISTS (SELECT 1 FROM public.platform_tenants pt WHERE pt.tenant_id=t AND pt.status='suspended')
+   AND (c IS NULL OR NOT EXISTS (SELECT 1 FROM public.platform_company_limits pcl WHERE pcl.company_id=c AND pcl.status='suspended'))
+   AND (perm=ANY(g.permissions) OR '*'=ANY(g.permissions))
+   AND (g.company_id IS NULL OR g.company_id=c)
+   AND (g.branch_id IS NULL OR g.branch_id=b OR (perm='organization.read' AND b IS NULL))
+   AND (perm='organization.read' OR g.role NOT IN ('employee','manager') OR employee=u.employee_id
+     OR (g.role='manager' AND EXISTS (SELECT 1 FROM public.team_links l WHERE l.tenant_id=t AND l.manager_id=u.employee_id AND l.employee_id=employee)))
+ );
+$$;
+
+-- A row lock on the company limit serializes concurrent employee inserts.
+CREATE OR REPLACE FUNCTION platform_enforce_employee_limit() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+DECLARE company_rule platform_company_limits%ROWTYPE; tenant_rule platform_tenants%ROWTYPE;
+BEGIN
+ SELECT * INTO tenant_rule FROM platform_tenants WHERE tenant_id=NEW.tenant_id FOR UPDATE;
+ SELECT * INTO company_rule FROM platform_company_limits WHERE company_id=NEW.company_id FOR UPDATE;
+ IF tenant_rule.tenant_id IS NULL OR company_rule.company_id IS NULL THEN
+   RAISE EXCEPTION 'Organization limits are not configured' USING ERRCODE='23514';
+ END IF;
+ IF tenant_rule.status='suspended' OR company_rule.status='suspended' THEN
+   RAISE EXCEPTION 'Organization access is suspended' USING ERRCODE='23514';
+ END IF;
+ IF tenant_rule.employee_limit IS NOT NULL AND
+   (SELECT count(*) FROM employees WHERE tenant_id=NEW.tenant_id) >= tenant_rule.employee_limit THEN
+   RAISE EXCEPTION 'Firm employee limit reached' USING ERRCODE='23514';
+ END IF;
+ IF company_rule.employee_limit IS NOT NULL AND
+   (SELECT count(*) FROM employees WHERE company_id=NEW.company_id) >= company_rule.employee_limit THEN
+   RAISE EXCEPTION 'Company employee limit reached' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+DROP TRIGGER IF EXISTS employees_platform_limit ON employees;
+CREATE TRIGGER employees_platform_limit BEFORE INSERT ON employees
+FOR EACH ROW EXECUTE FUNCTION platform_enforce_employee_limit();
+REVOKE ALL ON FUNCTION platform_enforce_employee_limit() FROM PUBLIC;

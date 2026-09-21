@@ -95,14 +95,14 @@ export async function createApp(
     if (!raw || !/^[a-f0-9]{64}$/.test(raw)) bad(401, "Please sign in");
     return db.as("hrms_auth", null, async (q) => {
       const r = await q.query(
-        "SELECT u.id,u.tenant_id,u.name,u.email,u.employee_id,s.csrf FROM auth.sessions s JOIN auth.users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND u.active",
+        "SELECT u.id,u.tenant_id,u.name,u.email,u.employee_id,s.csrf FROM auth.sessions s JOIN auth.users u ON u.id=s.user_id LEFT JOIN platform_tenants pt ON pt.tenant_id=u.tenant_id WHERE s.token_hash=$1 AND s.expires_at>now() AND u.active AND coalesce(pt.status,'active')='active' AND EXISTS(SELECT 1 FROM auth.grants g LEFT JOIN platform_company_limits pcl ON pcl.company_id=g.company_id WHERE g.user_id=u.id AND (g.company_id IS NULL OR pcl.status='active'))",
         [digest(raw)],
       );
       const a = r.rows[0];
       if (!a) bad(401, "Session expired; please sign in");
       a.grants = (
         await q.query(
-          "SELECT id,role,company_id,branch_id,permissions FROM auth.grants WHERE user_id=$1 AND tenant_id=$2",
+          "SELECT g.id,g.role,g.company_id,g.branch_id,g.permissions FROM auth.grants g LEFT JOIN platform_company_limits pcl ON pcl.company_id=g.company_id WHERE g.user_id=$1 AND g.tenant_id=$2 AND (g.company_id IS NULL OR pcl.status='active')",
           [a.id, a.tenant_id],
         )
       ).rows;
@@ -158,7 +158,7 @@ export async function createApp(
             bad(429, "Too many sign-in attempts; try again later");
           const u = (
             await q.query(
-              "SELECT * FROM auth.users WHERE email=$1 AND active",
+              "SELECT u.* FROM auth.users u LEFT JOIN platform_tenants pt ON pt.tenant_id=u.tenant_id WHERE u.email=$1 AND u.active AND coalesce(pt.status,'active')='active' AND EXISTS(SELECT 1 FROM auth.grants g LEFT JOIN platform_company_limits pcl ON pcl.company_id=g.company_id WHERE g.user_id=u.id AND (g.company_id IS NULL OR pcl.status='active'))",
               [input.email.toLowerCase()],
             )
           ).rows[0];
@@ -272,6 +272,105 @@ export async function createApp(
         res.clearCookie("pw_session", { path: "/" });
         return res.json({ ok: true });
       }
+      const platformOwner = a.grants.some((g) => g.role === "platform_owner");
+      if (path.startsWith("/platform")) {
+        if (!platformOwner) bad(403, "AS Communications platform owner required");
+        if (path === "/platform/overview" && method === "GET")
+          return res.json(await db.owner(async (q) => {
+            const tenants = (await q.query(
+              "SELECT t.id,t.name,coalesce(pt.status,'active') AS status,coalesce(pt.employee_limit,10000) AS employee_limit,(SELECT count(*)::int FROM companies c WHERE c.tenant_id=t.id) AS company_count,(SELECT count(*)::int FROM employees e WHERE e.tenant_id=t.id) AS employee_count FROM tenants t LEFT JOIN platform_tenants pt ON pt.tenant_id=t.id WHERE t.id<>$1 ORDER BY t.name",
+              [a.tenant_id],
+            )).rows;
+            const companies = (await q.query(
+              "SELECT c.id,c.tenant_id,c.name,c.code,coalesce(pcl.status,'active') AS status,coalesce(pcl.employee_limit,1000) AS employee_limit,(SELECT count(*)::int FROM employees e WHERE e.company_id=c.id) AS employee_count,(SELECT count(*)::int FROM branches b WHERE b.company_id=c.id) AS branch_count FROM companies c LEFT JOIN platform_company_limits pcl ON pcl.company_id=c.id WHERE c.tenant_id<>$1 ORDER BY c.name",
+              [a.tenant_id],
+            )).rows;
+            return { tenants, companies, totals: { tenants: tenants.length, companies: companies.length, employees: tenants.reduce((n: number, t: any) => n + Number(t.employee_count), 0) } };
+          }));
+        if (path === "/platform/tenants" && method === "POST") {
+          const x = z.object({
+            firmName: z.string().trim().min(2).max(120),
+            adminName: z.string().trim().min(2).max(120),
+            adminEmail: z.string().email().max(160),
+            adminPassword: z.string().min(14).max(200),
+            employeeLimit: z.number().int().min(1).max(100000),
+          }).strict().parse(req.body);
+          return res.status(201).json(await db.owner(async (q) => {
+            const tenantId = randomUUID(), userId = randomUUID();
+            await q.query("INSERT INTO tenants(id,name) VALUES($1,$2)", [tenantId,x.firmName]);
+            await q.query("INSERT INTO platform_tenants(tenant_id,employee_limit) VALUES($1,$2)", [tenantId,x.employeeLimit]);
+            await q.query("INSERT INTO auth.users(id,tenant_id,name,email,password_hash) VALUES($1,$2,$3,$4,$5)", [userId,tenantId,x.adminName,x.adminEmail.toLowerCase(),hashPassword(x.adminPassword)]);
+            await q.query("INSERT INTO auth.grants(id,tenant_id,user_id,role,company_id,permissions) VALUES($1,$2,$3,'firm_admin',NULL,$4)", [randomUUID(),tenantId,userId,roles.firm_admin]);
+            await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,'tenant.created',$3)", [randomUUID(),a.id,tenantId]);
+            return { id: tenantId, adminEmail: x.adminEmail.toLowerCase() };
+          }));
+        }
+        const tenantMatch = path.match(/^\/platform\/tenants\/([^/]+)$/);
+        if (tenantMatch && method === "PATCH") {
+          const id = parseId(tenantMatch[1]);
+          const x = z.object({ status: z.enum(["active","suspended"]).optional(), employeeLimit: z.number().int().min(1).max(100000).optional() }).strict().refine(v=>v.status!==undefined || v.employeeLimit!==undefined).parse(req.body);
+          if (id === a.tenant_id) bad(403,"Cannot change the owner control plane");
+          return res.json(await db.owner(async(q)=>{
+            const current=object((await q.query("SELECT * FROM platform_tenants WHERE tenant_id=$1 FOR UPDATE",[id])).rows);
+            await q.query("UPDATE platform_tenants SET status=$1,employee_limit=$2 WHERE tenant_id=$3",[x.status||current.status,x.employeeLimit??current.employee_limit,id]);
+            if(x.status==="suspended") await q.query("DELETE FROM auth.sessions WHERE user_id IN(SELECT id FROM auth.users WHERE tenant_id=$1)",[id]);
+            await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,$3,$4)",[randomUUID(),a.id,"tenant.updated",id]);
+            return {ok:true};
+          }));
+        }
+        if (path === "/platform/companies" && method === "POST") {
+          const x=z.object({tenantId:uuid,name:z.string().trim().min(2).max(120),code:z.string().regex(/^[A-Z0-9_-]{2,12}$/),employeeLimit:z.number().int().min(1).max(100000)}).strict().parse(req.body);
+          return res.status(201).json(await db.owner(async(q)=>{
+            const tenant=object((await q.query("SELECT * FROM platform_tenants WHERE tenant_id=$1 AND tenant_id<>$2",[x.tenantId,a.tenant_id])).rows);
+            if(tenant.status!=="active") bad(409,"Firm is suspended");
+            const id=randomUUID();
+            await q.query("INSERT INTO companies(id,tenant_id,name,code) VALUES($1,$2,$3,$4)",[id,x.tenantId,x.name,x.code]);
+            await q.query("UPDATE platform_company_limits SET employee_limit=$2 WHERE company_id=$1",[id,x.employeeLimit]);
+            await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,'company.created',$3)",[randomUUID(),a.id,id]);
+            return {id};
+          }));
+        }
+        if (path === "/platform/users" && method === "POST") {
+          const x=z.object({tenantId:uuid,companyId:uuid.optional(),name:z.string().trim().min(2).max(120),email:z.string().email().max(160),password:z.string().min(14).max(200),role:z.enum(["firm_admin","company_admin","hr"])}).strict().parse(req.body);
+          if (x.role!=="firm_admin" && !x.companyId) bad(400,"A company is required for this role");
+          if (x.role==="firm_admin" && x.companyId) bad(400,"Firm admin must not be company-scoped");
+          return res.status(201).json(await db.owner(async(q)=>{
+            const t=object((await q.query("SELECT * FROM platform_tenants WHERE tenant_id=$1 AND tenant_id<>$2",[x.tenantId,a.tenant_id])).rows);
+            if(t.status!=="active") bad(409,"Firm is suspended");
+            if(x.companyId) {
+              const c=object((await q.query("SELECT pcl.status FROM companies c JOIN platform_company_limits pcl ON pcl.company_id=c.id WHERE c.id=$1 AND c.tenant_id=$2",[x.companyId,x.tenantId])).rows);
+              if(c.status!=="active") bad(409,"Company is suspended");
+            }
+            const id=randomUUID();
+            await q.query("INSERT INTO auth.users(id,tenant_id,name,email,password_hash) VALUES($1,$2,$3,$4,$5)",[id,x.tenantId,x.name,x.email.toLowerCase(),hashPassword(x.password)]);
+            await q.query("INSERT INTO auth.grants(id,tenant_id,user_id,role,company_id,permissions) VALUES($1,$2,$3,$4,$5,$6)",[randomUUID(),x.tenantId,id,x.role,x.companyId||null,roles[x.role]]);
+            await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,'user.created',$3)",[randomUUID(),a.id,id]);
+            return {id,email:x.email.toLowerCase()};
+          }));
+        }
+        const companyMatch=path.match(/^\/platform\/companies\/([^/]+)$/);
+        if(companyMatch && method==="PATCH") {
+          const id=parseId(companyMatch[1]);
+          const x=z.object({status:z.enum(["active","suspended"]).optional(),employeeLimit:z.number().int().min(1).max(100000).optional()}).strict().refine(v=>v.status!==undefined || v.employeeLimit!==undefined).parse(req.body);
+          return res.json(await db.owner(async(q)=>{
+            const current=object((await q.query("SELECT pcl.*,c.tenant_id FROM platform_company_limits pcl JOIN companies c ON c.id=pcl.company_id WHERE pcl.company_id=$1 AND c.tenant_id<>$2 FOR UPDATE",[id,a.tenant_id])).rows);
+            await q.query("UPDATE platform_company_limits SET status=$1,employee_limit=$2 WHERE company_id=$3",[x.status||current.status,x.employeeLimit??current.employee_limit,id]);
+            if(x.status==="suspended") await q.query("DELETE FROM auth.sessions WHERE user_id IN(SELECT u.id FROM auth.users u JOIN auth.grants g ON g.user_id=u.id WHERE g.company_id=$1)",[id]);
+            await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,'company.updated',$3)",[randomUUID(),a.id,id]);
+            return {ok:true};
+          }));
+        }
+        const peopleMatch=path.match(/^\/platform\/companies\/([^/]+)\/employees$/);
+        if(peopleMatch && method==="GET") {
+          const id=parseId(peopleMatch[1]);
+          return res.json(await db.owner(async(q)=>{
+            object((await q.query("SELECT c.id FROM companies c WHERE c.id=$1 AND c.tenant_id<>$2",[id,a.tenant_id])).rows);
+            return (await q.query("SELECT id,code,name,department,designation,employment_type,status FROM employees WHERE company_id=$1 ORDER BY name LIMIT 1000",[id])).rows;
+          }));
+        }
+        bad(404,"Platform endpoint not found");
+      }
+      if (platformOwner && !path.startsWith("/help/")) bad(403,"Use the platform workspace");
       const company = req.query.companyId
         ? uuid.parse(req.query.companyId)
         : null;
@@ -378,6 +477,29 @@ export async function createApp(
             return { id };
           }),
         );
+      }
+      if (path === "/employees/import" && method === "POST") {
+        const x=z.object({companyId:uuid,branchId:uuid,source:z.enum(["csv","sqlserver","access","other"]),rows:z.array(employeeSchema.omit({companyId:true,branchId:true})).min(1).max(200)}).strict().parse(req.body);
+        must(a,"employees.write",x.companyId,x.branchId);
+        const codes=new Set<string>();
+        for(const row of x.rows) {
+          const code=row.code.toLowerCase();
+          if(codes.has(code)) bad(400,`Duplicate employee code in import: ${row.code}`);
+          codes.add(code);
+        }
+        return res.status(201).json(await scope(a,async(q)=>{
+          object((await q.query("SELECT id FROM branches WHERE tenant_id=$1 AND company_id=$2 AND id=$3",[a.tenant_id,x.companyId,x.branchId])).rows);
+          const found=(await q.query("SELECT code FROM employees WHERE company_id=$1 AND lower(code)=ANY($2::text[])",[x.companyId,Array.from(codes)])).rows;
+          if(found.length) bad(409,`Employee code already exists: ${found[0].code}`);
+          const batchId=randomUUID();
+          for(const row of x.rows) {
+            const id=randomUUID();
+            await q.query("INSERT INTO employees(id,tenant_id,company_id,branch_id,code,name,email,department,designation,employment_type,joined_on) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",[id,a.tenant_id,x.companyId,x.branchId,row.code,row.name,row.email,row.department,row.designation,row.employmentType,row.joinedOn]);
+            await audit(q,a,"employee.imported",id,x.companyId,x.branchId);
+          }
+          await audit(q,a,`employee.import.${x.source}`,batchId,x.companyId,x.branchId);
+          return {batchId,imported:x.rows.length};
+        }));
       }
       const empMatch = path.match(/^\/employees\/([^/]+)$/);
       if (empMatch) {

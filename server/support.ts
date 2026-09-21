@@ -42,6 +42,34 @@ export const articles = [
       "Open People and select Add employee. Choose the company and branch, employee code, employment type and joining date. Assign a salary and an effective policy separately. Only active, permitted companies appear in the selectors.",
   },
   {
+    id: "employee-import",
+    title: "Import employees from another system",
+    tags: "import csv sql server access database migration upload spreadsheet employee",
+    steps:
+      "Open People → Import employees. Export the required columns from SQL Server, MS Access or another database to CSV, choose a permitted company and branch, preview the rows, then import up to 200 at a time. The demo does not connect to a customer's database directly. Failed batches make no employee changes; ask your administrator to check duplicates and employee limits.",
+  },
+  {
+    id: "owner-provision",
+    title: "Provision a firm or company",
+    tags: "platform owner provision new firm company admin capacity limit subscription revoke suspend",
+    steps:
+      "The AS Communications platform owner signs in to the separate control plane. Use New firm to create a firm and its first firm admin, New company to add a company, or New administrator to assign a scoped role. Set employee limits per firm and company. Suspend access only after confirming the target; sessions are revoked. Ordinary firm admins cannot see this control plane.",
+  },
+  {
+    id: "gate-pass",
+    title: "Issue and close a gate pass",
+    tags: "gatepass gate pass visitor outside company private personal checkin checkout",
+    steps:
+      "Open Gate passes and create a pass. Record whether the person is an employee or an external visitor, the purpose and expected timing. Authorized staff record check-in and check-out. Keep sensitive personal details out of the free-text fields.",
+  },
+  {
+    id: "employee-exit",
+    title: "Track an employee exit",
+    tags: "exit resignation offboarding clearance final settlement relieving",
+    steps:
+      "Open Exits and create a record for the employee. Capture the reason, last working date and clearance steps. HR should review access removal, assets and final settlement. The demo records the workflow; it does not automatically calculate statutory final pay.",
+  },
+  {
     id: "support-human",
     title: "Get help from a person",
     tags: "help support error broken bug contact trouble",
