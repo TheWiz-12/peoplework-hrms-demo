@@ -5,7 +5,9 @@ services:
     name: peoplework-hrms-demo
     runtime: node
     plan: free
-    buildCommand: npm ci && npm run build
+    # NODE_ENV is production at runtime, but Vite/TypeScript are needed to
+    # compile the frontend during the build phase.
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm run start
     healthCheckPath: /api/health
     envVars:
