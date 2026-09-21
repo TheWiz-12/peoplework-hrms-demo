@@ -15,7 +15,15 @@ services:
         value: production
       - key: DEMO_MODE
         value: "true"
-      - key: ALLOW_EMBEDDED_DEMO
-        value: "true"
       - key: DEMO_PASSWORD
         sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: peoplework-hrms-demo-db
+          property: connectionString
+
+databases:
+  - name: peoplework-hrms-demo-db
+    plan: free
+    databaseName: peoplework_demo
+    user: peoplework_demo_user

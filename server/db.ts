@@ -63,7 +63,14 @@ export class Database {
     const embeddedDemo =
       process.env.DEMO_MODE === "true" &&
       process.env.ALLOW_EMBEDDED_DEMO === "true";
+    // A hosted demo uses the managed PostgreSQL database supplied by Render.
+    // Its schema is initialized and seeded only with fictional records.
+    const hostedDemo = process.env.DEMO_MODE === "true" && !!this.pool;
     if (process.env.NODE_ENV === "production") {
+      if (hostedDemo) {
+        await migrate(this);
+        return;
+      }
       if (!embeddedDemo && (!this.pool || process.env.DEMO_MODE === "true"))
         throw new Error("Production requires PostgreSQL and forbids demo mode");
       if (embeddedDemo && this.embedded) {

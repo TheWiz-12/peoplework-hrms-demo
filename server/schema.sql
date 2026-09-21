@@ -4,6 +4,9 @@ DO $$ BEGIN CREATE ROLE hrms_auth NOLOGIN NOSUPERUSER NOBYPASSRLS; EXCEPTION WHE
 DO $$ BEGIN CREATE ROLE hrms_internal NOLOGIN NOSUPERUSER NOBYPASSRLS; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- Only the migration identity may assume the helper owner. Never grant this role to runtime.
 GRANT hrms_internal TO CURRENT_USER;
+-- The managed demo connection may assume only these constrained runtime roles.
+-- A real production deployment uses separately provisioned migration and app users.
+GRANT hrms_app, hrms_auth TO CURRENT_USER;
 CREATE TABLE IF NOT EXISTS auth.users (
  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, email text UNIQUE NOT NULL,
  name text NOT NULL, password_hash text NOT NULL, employee_id uuid, active boolean NOT NULL DEFAULT true
