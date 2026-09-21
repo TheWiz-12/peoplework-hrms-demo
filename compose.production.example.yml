@@ -1,0 +1,26 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DEMO_MODE: "false"
+      APP_ORIGIN: https://hrms.example.com
+      DATABASE_URL: ${DATABASE_URL}
+      PORT: "3001"
+    ports:
+      - "127.0.0.1:3001:3001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.0"
+# Put the app behind an HTTPS load balancer/WAF. Use managed PostgreSQL in a
+# private network; do not expose port 5432 or place its credentials in this file.

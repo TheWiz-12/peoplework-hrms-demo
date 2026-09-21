@@ -1,4 +1,5 @@
-# Temporary public demo only. Use fictional data; do not upload employee or biometric data.
+# Temporary public demo only. It seeds fictional data and uses ephemeral local
+# storage. Never use this service for real employee, payroll, or biometric data.
 services:
   - type: web
     name: peoplework-hrms-demo
@@ -9,10 +10,10 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
-        value: development
+        value: production
       - key: DEMO_MODE
         value: "true"
-      - key: HOST
-        value: 0.0.0.0
-      - key: APP_ORIGIN
+      - key: ALLOW_EMBEDDED_DEMO
+        value: "true"
+      - key: DEMO_PASSWORD
         sync: false
