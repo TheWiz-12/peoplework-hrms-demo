@@ -12,8 +12,8 @@ npm run dev
 Open `http://127.0.0.1:5173`. The development login page offers clearly marked fictional demo accounts. All use the displayed demo password. Development data is stored locally in `.data/`; it is ignored by Git.
 
 ```bash
-npm test          # 49 backend/security tests
-npm run test:ui   # 8 Chrome user-journey tests
+npm test          # current CSV, owner, tenant isolation and limit tests
+npm run test:ui   # requires separate Playwright journey files
 npm run build
 ```
 
@@ -28,6 +28,8 @@ npm run build
 | Payroll | Integer-paise salary snapshots, company-period uniqueness, draft → review → two-person lock. This is **not** statutory/payroll-payment ready yet. |
 | Other modules | Usable scoped registers for performance, learning, canteen, contractors, gate passes, exits and support tickets. |
 | Support assistant | Curated product help with citations and escalation. It does not send prompts to OpenAI. An operator may configure a private local model only to rephrase a vetted article. |
+| Platform owner | Separate AS Communications control plane for firm/company provisioning, scoped administrator creation, suspension and employee capacity limits. Enabled only when `PLATFORM_OWNER_PASSWORD` is configured. |
+| Employee import | CSV preview and atomic, scope-checked batches; local read-only export helper for SQL Server, MS Access and PostgreSQL. See [employee import guide](docs/employee-import.md). |
 
 ## Security model
 
@@ -67,3 +69,5 @@ OCI is usually the value option for a 90–300 employee first deployment; AWS is
 ## Known implementation boundaries
 
 This is a strong working baseline, not the complete commercial HRMS scope. Before go-live, implement and validate statutory tax/PF/ESI/TDS, payroll proration and bank files, multi-stage workflows, native Android/iOS app, document storage, notifications, device provisioning/secret rotation, SSO/MFA, scheduled backups/DR automation, observability pipeline and the detailed workflows for PMS/training/canteen/exit/gate passes. The test report gives the current exact status.
+
+The public Render demo uses the migration database identity for its isolated platform-owner control plane. Do not carry that privilege pattern into customer production: use a separate migration identity and narrow audited platform-management service functions. Set `PLATFORM_OWNER_PASSWORD` as a Render secret (at least 16 characters, different from `DEMO_PASSWORD`) to create `owner@ascommunications.test` on the next service start. No owner password is stored in source control. The free demo is for fictional data only.

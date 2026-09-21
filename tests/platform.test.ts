@@ -37,6 +37,8 @@ test("platform owner, tenant isolation, import and limits",async()=>{
     const otherCsrf=other.body.csrf;
     assert.equal((await firm.get(`/api/platform/companies/${ids.a}/employees`)).status,403);
     assert.equal((await firm.get(`/api/employees?companyId=${ids.a}`)).body.length,0);
+    const firmCreatedCompany=await firm.post("/api/companies").set("X-CSRF-Token",otherCsrf).send({name:"Second Company",code:"SECOND"});
+    assert.equal(firmCreatedCompany.status,201,JSON.stringify(firmCreatedCompany.body));
     const branch=await firm.post("/api/branches").set("X-CSRF-Token",otherCsrf).send({companyId:company.body.id,name:"Test Branch"});
     assert.equal(branch.status,201,JSON.stringify(branch.body));
     const row={code:"T001",name:"Test Employee",email:"test.employee@example.test",department:"HR",designation:"Officer",employmentType:"Permanent",joinedOn:"2026-01-02"};
