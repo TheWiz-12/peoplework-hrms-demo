@@ -1,0 +1,18 @@
+# Temporary public demo only. Use fictional data; do not upload employee or biometric data.
+services:
+  - type: web
+    name: peoplework-hrms-demo
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: development
+      - key: DEMO_MODE
+        value: "true"
+      - key: HOST
+        value: 0.0.0.0
+      - key: APP_ORIGIN
+        sync: false
