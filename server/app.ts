@@ -325,7 +325,9 @@ export async function createApp(
           }));
         }
         if (path === "/platform/companies" && method === "POST") {
-          const x=z.object({tenantId:uuid,name:z.string().trim().min(2).max(120),code:z.string().regex(/^[A-Z0-9_-]{2,12}$/),employeeLimit:z.number().int().min(1).max(100000)}).strict().parse(req.body);
+          const administrator=z.object({name:z.string().trim().min(2).max(120),email:z.string().email().max(160),password:z.string().min(14).max(200)}).strict();
+          const x=z.object({tenantId:uuid,name:z.string().trim().min(2).max(120),code:z.string().regex(/^[A-Z0-9_-]{2,12}$/),employeeLimit:z.number().int().min(1).max(100000),companyAdmin:administrator.optional(),hrAdmin:administrator.optional()}).strict().parse(req.body);
+          if(x.companyAdmin && x.hrAdmin && x.companyAdmin.email.toLowerCase()===x.hrAdmin.email.toLowerCase()) bad(400,"Company and HR administrators need different email addresses");
           return res.status(201).json(await db.owner(async(q)=>{
             const tenant=object((await q.query("SELECT pt.*,t.name FROM platform_tenants pt JOIN tenants t ON t.id=pt.tenant_id WHERE pt.tenant_id=$1 AND pt.tenant_id<>$2 FOR UPDATE",[x.tenantId,a.tenant_id])).rows);
             if(tenant.status!=="active") bad(409,"Firm is suspended");
@@ -335,8 +337,24 @@ export async function createApp(
             const id=randomUUID();
             await q.query("INSERT INTO companies(id,tenant_id,name,code) VALUES($1,$2,$3,$4)",[id,x.tenantId,x.name,x.code]);
             await q.query("UPDATE platform_company_limits SET employee_limit=$2 WHERE company_id=$1",[id,x.employeeLimit]);
+            for(const [role,admin] of [["company_admin",x.companyAdmin],["hr",x.hrAdmin]] as const) {
+              if(!admin) continue;
+              const userId=randomUUID();
+              await q.query("INSERT INTO auth.users(id,tenant_id,name,email,password_hash) VALUES($1,$2,$3,$4,$5)",[userId,x.tenantId,admin.name,admin.email.toLowerCase(),hashPassword(admin.password)]);
+              await q.query("INSERT INTO auth.grants(id,tenant_id,user_id,role,company_id,permissions) VALUES($1,$2,$3,$4,$5,$6)",[randomUUID(),x.tenantId,userId,role,id,roles[role]]);
+              await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,'user.created',$3)",[randomUUID(),a.id,userId]);
+            }
             await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,'company.created',$3)",[randomUUID(),a.id,id]);
             return {id};
+          }));
+        }
+        const firmAdminsMatch=path.match(/^\/platform\/tenants\/([^/]+)\/administrators$/);
+        if(firmAdminsMatch && method==="GET") {
+          const tenantId=parseId(firmAdminsMatch[1]);
+          if(tenantId===a.tenant_id) bad(403,"Owner account details are not shown here");
+          return res.json(await db.owner(async(q)=>{
+            object((await q.query("SELECT id FROM tenants WHERE id=$1",[tenantId])).rows);
+            return (await q.query("SELECT u.id,u.name,u.email,u.active,g.role,g.company_id,c.name AS company_name FROM auth.grants g JOIN auth.users u ON u.id=g.user_id AND u.tenant_id=g.tenant_id LEFT JOIN companies c ON c.id=g.company_id WHERE g.tenant_id=$1 AND g.role IN ('firm_admin','company_admin','hr') ORDER BY CASE g.role WHEN 'firm_admin' THEN 0 WHEN 'company_admin' THEN 1 ELSE 2 END,c.name,u.name",[tenantId])).rows;
           }));
         }
         if (path === "/platform/users" && method === "POST") {
@@ -355,6 +373,18 @@ export async function createApp(
             await q.query("INSERT INTO auth.grants(id,tenant_id,user_id,role,company_id,permissions) VALUES($1,$2,$3,$4,$5,$6)",[randomUUID(),x.tenantId,id,x.role,x.companyId||null,roles[x.role]]);
             await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,'user.created',$3)",[randomUUID(),a.id,id]);
             return {id,email:x.email.toLowerCase()};
+          }));
+        }
+        const platformUserMatch=path.match(/^\/platform\/users\/([^/]+)$/);
+        if(platformUserMatch && method==="PATCH") {
+          const id=parseId(platformUserMatch[1]);
+          const x=z.object({name:z.string().trim().min(2).max(120).optional(),email:z.string().email().max(160).optional(),newPassword:z.string().min(14).max(200).optional()}).strict().refine(v=>v.name!==undefined||v.email!==undefined||v.newPassword!==undefined).parse(req.body);
+          return res.json(await db.owner(async(q)=>{
+            const user=object((await q.query("SELECT u.id,u.tenant_id FROM auth.users u WHERE u.id=$1 AND u.tenant_id<>$2 AND EXISTS(SELECT 1 FROM auth.grants g WHERE g.user_id=u.id AND g.tenant_id=u.tenant_id AND g.role IN ('firm_admin','company_admin','hr')) FOR UPDATE",[id,a.tenant_id])).rows);
+            await q.query("UPDATE auth.users SET name=coalesce($1,name),email=coalesce($2,email),password_hash=coalesce($3,password_hash) WHERE id=$4",[x.name??null,x.email?.toLowerCase()??null,x.newPassword?hashPassword(x.newPassword):null,id]);
+            if(x.email!==undefined||x.newPassword!==undefined) await q.query("DELETE FROM auth.sessions WHERE user_id=$1",[id]);
+            await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,'user.updated',$3)",[randomUUID(),a.id,user.id]);
+            return {ok:true};
           }));
         }
         const companyMatch=path.match(/^\/platform\/companies\/([^/]+)$/);

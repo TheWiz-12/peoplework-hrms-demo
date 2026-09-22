@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import PlatformWorkspace from "./PlatformWorkspace";
 import EmployeeImport from "./EmployeeImport";
+import PasswordInput from "./PasswordInput";
 import {
   LayoutDashboard,
   Users,
@@ -385,6 +386,8 @@ function Modal({
                       setValues({ ...values, [f.key]: e.target.value })
                     }
                   />
+                ) : f.type === "password" ? (
+                  <PasswordInput value={values[f.key]} onChange={(value)=>setValues({...values,[f.key]:value})} required={f.required!==false} minLength={14}/>
                 ) : (
                   <input
                     required={f.required !== false}
@@ -514,12 +517,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
             </label>
             <label>
               Password
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
+              <PasswordInput value={password} onChange={setPassword} autoComplete="current-password"/>
             </label>
             {error && (
               <div className="error" role="alert">

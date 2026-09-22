@@ -56,6 +56,13 @@ export const articles = [
       "The AS Communications platform owner signs in to the separate control plane. Use New firm to create a firm and its first firm admin, New company to add a company, or New administrator to assign a scoped role. Each company employee limit reserves capacity from its firm: the sum of company limits cannot exceed the firm limit. The New company form shows remaining slots. Increase the firm limit or lower another company limit if none remain. Suspending a company does not release its reserved slots; lower its limit to release capacity. Ordinary firm admins cannot see this control plane.",
   },
   {
+    id: "owner-administrators",
+    title: "Manage firm, company and HR administrators",
+    tags: "owner administrator company admin firm admin hr admin credentials password reset email access",
+    steps:
+      "In the AS Communications owner portal, click a firm name to view its firm administrators and each company's company and HR administrators. You can edit an administrator's name or email and set a new password. Existing passwords cannot be displayed because only salted password hashes are stored. Password resets revoke that user's sessions. During New company, optionally create company and HR administrators; later you can use New administrator. Firm administrators can also create users and assign company or HR access in their own Access control screen.",
+  },
+  {
     id: "gate-pass",
     title: "Issue and close a gate pass",
     tags: "gatepass gate pass visitor outside company private personal checkin checkout",
