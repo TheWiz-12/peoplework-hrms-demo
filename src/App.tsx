@@ -586,6 +586,7 @@ export default function App() {
     [loginNotice, setLoginNotice] = useState(""),
     [refresh, setRefresh] = useState(0),
     [modal, setModal] = useState<any>(null),
+    [selectedEmployee, setSelectedEmployee] = useState<any>(null),
     [showImport, setShowImport] = useState(false),
     [help, setHelp] = useState(false),
     [mobileNav, setMobileNav] = useState(false),
@@ -681,7 +682,7 @@ export default function App() {
   const go = (p: string) => {
     setPage(p);
     setSearch("");
-    setStatus("all");
+    setStatus(p === "employees" ? "active" : "all");
     setMobileNav(false);
   };
   const saved = () => {
@@ -703,6 +704,50 @@ export default function App() {
         save: details.managedSeparately ? async() => {} : (v:any) => mutate(`/employees/${e.id}/login`,{password:v.password}),
       });
     } catch (err:any) { setError(err.message); }
+  };
+  const openEmployeeDetails = async (e: any) => {
+    try { setSelectedEmployee(await api(`/employees/${e.id}`)); }
+    catch(err:any) { setError(err.message); }
+  };
+  const editEmployee = (e:any) => {
+    setSelectedEmployee(null);
+    setModal({
+      title:`Edit ${e.name}`,
+      description:"Update the current profile. Employee code, company and branch stay fixed so historical records remain traceable. Changing the work email also updates an employee-only login and signs out its sessions.",
+      fields:[
+        {key:"name",label:"Full name",value:e.name},
+        {key:"email",label:"Work email",type:"email",value:e.email},
+        {key:"department",label:"Department",value:e.department},
+        {key:"designation",label:"Designation",value:e.designation},
+        {key:"employmentType",label:"Employment type",value:e.employment_type},
+        {key:"joinedOn",label:"Joined on",type:"date",value:String(e.joined_on).slice(0,10)},
+      ],
+      save:(v:any)=>mutate(`/employees/${e.id}`,v,"PATCH"),
+    });
+  };
+  const changeEmployeeStatus = (e:any) => {
+    const archive=e.status==="active";
+    setSelectedEmployee(null);
+    setModal({
+      title:archive?`Remove ${e.name} from active people?`:`Restore ${e.name}?`,
+      description:archive?"This archives the employee and blocks their employee login immediately. Attendance, payroll and audit history are retained. You can find and restore them with the Inactive filter.":"This returns the employee to the active directory and restores their existing employee login.",
+      fields:[],
+      save:()=>mutate(`/employees/${e.id}`,{status:archive?"inactive":"active"},"PATCH"),
+    });
+  };
+  const editAdministrator = (g:any) => {
+    const u=access.users.find((item:any)=>item.id===g.user_id);
+    if(!u)return;
+    setModal({
+      title:`Edit ${g.role==="hr"?"HR":"company"} administrator`,
+      description:"The firm head can update this administrator's name, login email or password. Existing passwords cannot be viewed. Changing email or password signs out their current sessions.",
+      fields:[
+        {key:"name",label:"Name",value:u.name},
+        {key:"email",label:"Login email",type:"email",value:u.email},
+        {key:"newPassword",label:"New password (optional)",type:"password",required:false},
+      ],
+      save:(v:any)=>mutate(`/admin-users/${u.id}`,{name:v.name,email:v.email,...(v.newPassword?{newPassword:v.newPassword}:{})},"PATCH"),
+    });
   };
   const openPasswordChange = () => setModal({
     title: "Change your password",
@@ -1857,7 +1902,7 @@ export default function App() {
                                   <Avatar name={e.name} />
                                   <div>
                                     {session.grants.some((g:any)=>["firm_admin","company_admin","hr"].includes(g.role)&&(!g.company_id||g.company_id===e.company_id)&&(!g.branch_id||g.branch_id===e.branch_id))
-                                      ? <button className="person-name-button" onClick={()=>openEmployeeLogin(e)}>{e.name}</button>
+                                      ? <button className="person-name-button" onClick={()=>openEmployeeDetails(e)}>{e.name}</button>
                                       : <strong>{e.name}</strong>}
                                     <small>{e.email}</small>
                                   </div>
@@ -2153,6 +2198,7 @@ export default function App() {
                                   )?.name
                                 }
                               </strong>
+                              <small>{access.users.find((u:any)=>u.id===g.user_id)?.email}</small>
                             </td>
                             <td>
                               <Badge tone="purple">{pretty(g.role)}</Badge>
@@ -2168,21 +2214,24 @@ export default function App() {
                               )?.name || "All permitted branches"}
                             </td>
                             <td>
+                              {["company_admin","hr"].includes(g.role) && (
+                                <button className="text-button" onClick={()=>editAdministrator(g)}>Edit account</button>
+                              )}
                               {g.role !== "firm_admin" && (
                                 <button
                                   className="text-button danger"
                                   onClick={() => {
                                     setModal({
-                                      title: "Revoke access",
+                                      title: ["company_admin","hr"].includes(g.role) ? "Remove administrator access" : "Revoke access",
                                       description:
-                                        "This removes the selected role assignment immediately.",
+                                        "This removes the selected role assignment and signs out this account. It keeps historical activity and can be reassigned later.",
                                       fields: [],
                                       save: () =>
                                         mutate("/access/" + g.id, {}, "DELETE"),
                                     });
                                   }}
                                 >
-                                  Revoke
+                                  {["company_admin","hr"].includes(g.role)?"Remove role":"Revoke"}
                                 </button>
                               )}
                             </td>
@@ -2372,6 +2421,23 @@ export default function App() {
           {toast}
         </div>
       )}
+      {selectedEmployee && <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setSelectedEmployee(null)}}>
+        <section className="modal employee-detail" role="dialog" aria-modal="true" aria-labelledby="employee-detail-title">
+          <div className="modal-top"><span className="eyebrow">PEOPLEWORK · EMPLOYEE PROFILE</span><button className="icon-button" aria-label="Close employee details" onClick={()=>setSelectedEmployee(null)}><X size={20}/></button></div>
+          <div className="employee-detail-heading"><Avatar name={selectedEmployee.name}/><div><h2 id="employee-detail-title">{selectedEmployee.name}</h2><span className="mono">{selectedEmployee.code}</span></div><Badge tone={selectedEmployee.status==="active"?"green":""}>{pretty(selectedEmployee.status)}</Badge></div>
+          <div className="employee-detail-grid">
+            <div><small>Work email</small><strong>{selectedEmployee.email}</strong></div>
+            <div><small>Department</small><strong>{selectedEmployee.department}</strong></div>
+            <div><small>Designation</small><strong>{selectedEmployee.designation}</strong></div>
+            <div><small>Employment type</small><strong>{selectedEmployee.employment_type}</strong></div>
+            <div><small>Company</small><strong>{org.companies.find((c:any)=>c.id===selectedEmployee.company_id)?.name||"—"}</strong></div>
+            <div><small>Branch</small><strong>{org.branches.find((b:any)=>b.id===selectedEmployee.branch_id)?.name||"—"}</strong></div>
+            <div><small>Joined on</small><strong>{String(selectedEmployee.joined_on).slice(0,10)}</strong></div>
+          </div>
+          <p className="employee-detail-note">Passwords are never displayed. Removing a person archives their profile and blocks employee sign-in while preserving attendance, payroll and audit history.</p>
+          <div className="employee-detail-actions"><button className="button secondary" onClick={()=>editEmployee(selectedEmployee)}>Edit details</button><button className="button secondary" onClick={()=>{const e=selectedEmployee;setSelectedEmployee(null);openEmployeeLogin(e)}}>Login &amp; password</button><button className="button secondary danger" onClick={()=>changeEmployeeStatus(selectedEmployee)}>{selectedEmployee.status==="active"?"Remove from active people":"Restore employee"}</button></div>
+        </section>
+      </div>}
       {showImport && <EmployeeImport api={api} companies={org.companies.filter((c:any)=>(!company||company===c.id)&&session.grants.some((g:any)=>(g.permissions.includes("*")||g.permissions.includes("employees.write"))&&(!g.company_id||g.company_id===c.id)))} branches={org.branches} onClose={()=>setShowImport(false)} onImported={()=>{setToast("Employees imported successfully");setRefresh(r=>r+1)}}/>}
       <button
         className="help-launcher"

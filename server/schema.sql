@@ -89,7 +89,7 @@ BEGIN
  IF firm_limit IS NULL THEN
    RAISE EXCEPTION 'Firm employee limit is not configured' USING ERRCODE='23514';
  END IF;
- SELECT count(*) INTO existing_employees FROM employees WHERE company_id=NEW.company_id;
+ SELECT count(*) INTO existing_employees FROM employees WHERE company_id=NEW.company_id AND status='active';
  IF NEW.employee_limit < existing_employees THEN
    RAISE EXCEPTION 'Company limit cannot be lower than its current employee count' USING ERRCODE='23514';
  END IF;
@@ -118,7 +118,7 @@ BEGIN
  SELECT coalesce(sum(pcl.employee_limit),0) INTO allocated
  FROM platform_company_limits pcl JOIN companies c ON c.id=pcl.company_id
  WHERE c.tenant_id=NEW.tenant_id;
- SELECT count(*) INTO existing_employees FROM employees WHERE tenant_id=NEW.tenant_id;
+ SELECT count(*) INTO existing_employees FROM employees WHERE tenant_id=NEW.tenant_id AND status='active';
  IF NEW.employee_limit < allocated OR NEW.employee_limit < existing_employees THEN
    RAISE EXCEPTION 'Firm limit cannot be lower than allocated company limits or current employees' USING ERRCODE='23514';
  END IF;
@@ -265,6 +265,11 @@ CREATE OR REPLACE FUNCTION platform_enforce_employee_limit() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
 DECLARE company_rule platform_company_limits%ROWTYPE; tenant_rule platform_tenants%ROWTYPE;
 BEGIN
+ IF TG_OP='UPDATE' THEN
+   IF OLD.status='active' OR NEW.status<>'active' THEN RETURN NEW; END IF;
+ ELSIF NEW.status<>'active' THEN
+   RETURN NEW;
+ END IF;
  SELECT * INTO tenant_rule FROM platform_tenants WHERE tenant_id=NEW.tenant_id FOR UPDATE;
  SELECT * INTO company_rule FROM platform_company_limits WHERE company_id=NEW.company_id FOR UPDATE;
  IF tenant_rule.tenant_id IS NULL OR company_rule.company_id IS NULL THEN
@@ -274,16 +279,16 @@ BEGIN
    RAISE EXCEPTION 'Organization access is suspended' USING ERRCODE='23514';
  END IF;
  IF tenant_rule.employee_limit IS NOT NULL AND
-   (SELECT count(*) FROM employees WHERE tenant_id=NEW.tenant_id) >= tenant_rule.employee_limit THEN
+   (SELECT count(*) FROM employees WHERE tenant_id=NEW.tenant_id AND status='active') >= tenant_rule.employee_limit THEN
    RAISE EXCEPTION 'Firm employee limit reached' USING ERRCODE='23514';
  END IF;
  IF company_rule.employee_limit IS NOT NULL AND
-   (SELECT count(*) FROM employees WHERE company_id=NEW.company_id) >= company_rule.employee_limit THEN
+   (SELECT count(*) FROM employees WHERE company_id=NEW.company_id AND status='active') >= company_rule.employee_limit THEN
    RAISE EXCEPTION 'Company employee limit reached' USING ERRCODE='23514';
  END IF;
  RETURN NEW;
 END; $$;
 DROP TRIGGER IF EXISTS employees_platform_limit ON employees;
-CREATE TRIGGER employees_platform_limit BEFORE INSERT ON employees
+CREATE TRIGGER employees_platform_limit BEFORE INSERT OR UPDATE OF status ON employees
 FOR EACH ROW EXECUTE FUNCTION platform_enforce_employee_limit();
 REVOKE ALL ON FUNCTION platform_enforce_employee_limit() FROM PUBLIC;

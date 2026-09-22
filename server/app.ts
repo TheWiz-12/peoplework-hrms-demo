@@ -298,11 +298,11 @@ export async function createApp(
         if (path === "/platform/overview" && method === "GET")
           return res.json(await db.owner(async (q) => {
             const tenants = (await q.query(
-              "SELECT t.id,t.name,coalesce(pt.status,'active') AS status,coalesce(pt.employee_limit,10000) AS employee_limit,(SELECT count(*)::int FROM companies c WHERE c.tenant_id=t.id) AS company_count,(SELECT count(*)::int FROM employees e WHERE e.tenant_id=t.id) AS employee_count FROM tenants t LEFT JOIN platform_tenants pt ON pt.tenant_id=t.id WHERE t.id<>$1 ORDER BY t.name",
+              "SELECT t.id,t.name,coalesce(pt.status,'active') AS status,coalesce(pt.employee_limit,10000) AS employee_limit,(SELECT count(*)::int FROM companies c WHERE c.tenant_id=t.id) AS company_count,(SELECT count(*)::int FROM employees e WHERE e.tenant_id=t.id AND e.status='active') AS employee_count FROM tenants t LEFT JOIN platform_tenants pt ON pt.tenant_id=t.id WHERE t.id<>$1 ORDER BY t.name",
               [a.tenant_id],
             )).rows;
             const companies = (await q.query(
-              "SELECT c.id,c.tenant_id,c.name,c.code,coalesce(pcl.status,'active') AS status,coalesce(pcl.employee_limit,1000) AS employee_limit,(SELECT count(*)::int FROM employees e WHERE e.company_id=c.id) AS employee_count,(SELECT count(*)::int FROM branches b WHERE b.company_id=c.id) AS branch_count FROM companies c LEFT JOIN platform_company_limits pcl ON pcl.company_id=c.id WHERE c.tenant_id<>$1 ORDER BY c.name",
+              "SELECT c.id,c.tenant_id,c.name,c.code,coalesce(pcl.status,'active') AS status,coalesce(pcl.employee_limit,1000) AS employee_limit,(SELECT count(*)::int FROM employees e WHERE e.company_id=c.id AND e.status='active') AS employee_count,(SELECT count(*)::int FROM branches b WHERE b.company_id=c.id) AS branch_count FROM companies c LEFT JOIN platform_company_limits pcl ON pcl.company_id=c.id WHERE c.tenant_id<>$1 ORDER BY c.name",
               [a.tenant_id],
             )).rows;
             return { tenants, companies, totals: { tenants: tenants.length, companies: companies.length, employees: tenants.reduce((n: number, t: any) => n + Number(t.employee_count), 0) } };
@@ -334,7 +334,7 @@ export async function createApp(
             const current=object((await q.query("SELECT * FROM platform_tenants WHERE tenant_id=$1 FOR UPDATE",[id])).rows);
             if(x.employeeLimit!==undefined) {
               const allocation=(await q.query("SELECT coalesce(sum(pcl.employee_limit),0)::int AS allocated FROM platform_company_limits pcl JOIN companies c ON c.id=pcl.company_id WHERE c.tenant_id=$1",[id])).rows[0].allocated;
-              const employees=(await q.query("SELECT count(*)::int AS total FROM employees WHERE tenant_id=$1",[id])).rows[0].total;
+              const employees=(await q.query("SELECT count(*)::int AS total FROM employees WHERE tenant_id=$1 AND status='active'",[id])).rows[0].total;
               const minimum=Math.max(allocation,employees);
               if(x.employeeLimit<minimum) bad(409,`Firm needs a limit of at least ${minimum} for existing company allocations and employees`);
               await q.query("UPDATE platform_tenants SET status=$1,employee_limit=$2 WHERE tenant_id=$3",[x.status||current.status,x.employeeLimit,id]);
@@ -416,7 +416,7 @@ export async function createApp(
             const firm=object((await q.query("SELECT employee_limit FROM platform_tenants WHERE tenant_id=$1 FOR UPDATE",[company.tenant_id])).rows);
             const current=object((await q.query("SELECT * FROM platform_company_limits WHERE company_id=$1 FOR UPDATE",[id])).rows);
             if(x.employeeLimit!==undefined) {
-              const used=(await q.query("SELECT count(*)::int AS total FROM employees WHERE company_id=$1",[id])).rows[0].total;
+              const used=(await q.query("SELECT count(*)::int AS total FROM employees WHERE company_id=$1 AND status='active'",[id])).rows[0].total;
               if(x.employeeLimit<used) bad(409,`${company.name} already has ${used} employees; its limit cannot be lower`);
               const otherAllocated=(await q.query("SELECT coalesce(sum(pcl.employee_limit),0)::int AS total FROM platform_company_limits pcl JOIN companies c ON c.id=pcl.company_id WHERE c.tenant_id=$1 AND pcl.company_id<>$2",[company.tenant_id,id])).rows[0].total;
               const available=firm.employee_limit-otherAllocated;
@@ -674,37 +674,55 @@ export async function createApp(
           );
         if (method === "PATCH") {
           const x = z
-            .object({ status: z.enum(["active", "inactive"]) })
+            .object({
+              status: z.enum(["active", "inactive"]).optional(),
+              name: z.string().trim().min(2).max(120).optional(),
+              email: z.string().email().max(160).optional(),
+              department: z.string().trim().min(1).max(120).optional(),
+              designation: z.string().trim().min(1).max(120).optional(),
+              employmentType: z.string().trim().min(1).max(60).optional(),
+              joinedOn: date.optional(),
+            })
             .strict()
+            .refine((v) => Object.keys(v).length > 0)
             .parse(req.body);
-          const updated = await scope(a, async (q) => {
+          if (!a.grants.some((g) => ["firm_admin","company_admin","hr"].includes(g.role)))
+            bad(403,"Firm, company, or HR administrator required");
+          const updated = await db.owner(async (q) => {
+              await q.query("SET LOCAL ROLE hrms_app");
+              await q.query("SELECT set_config('app.actor_id',$1,true)",[a.id]);
               const e = object(
-                (await q.query("SELECT * FROM employees WHERE id=$1", [id]))
+                (await q.query("SELECT * FROM employees WHERE id=$1 FOR UPDATE", [id]))
                   .rows,
               );
               must(a, "employees.write", e.company_id, e.branch_id);
-              await q.query("UPDATE employees SET status=$1 WHERE id=$2", [
-                x.status,
-                id,
-              ]);
+              if (!a.grants.some((g) => ["firm_admin","company_admin","hr"].includes(g.role) &&
+                (!g.company_id || g.company_id===e.company_id) && (!g.branch_id || g.branch_id===e.branch_id)))
+                bad(403,"This employee is outside your administrator scope");
+              const profile = object((await q.query(
+                "UPDATE employees SET status=coalesce($1,status),name=coalesce($2,name),email=coalesce($3,email),department=coalesce($4,department),designation=coalesce($5,designation),employment_type=coalesce($6,employment_type),joined_on=coalesce($7,joined_on) WHERE id=$8 RETURNING *",
+                [x.status??null,x.name??null,x.email?.toLowerCase()??null,x.department??null,x.designation??null,x.employmentType??null,x.joinedOn??null,id],
+              )).rows);
               await audit(
                 q,
                 a,
-                "employee." + x.status,
+                x.status === "inactive" ? "employee.archived" : x.status === "active" ? "employee.restored" : "employee.profile.updated",
                 id,
                 e.company_id,
                 e.branch_id,
               );
-              return { ok: true };
-            });
-          // Inactive employees cannot keep using an employee-only login.
-          await db.as("hrms_auth",a.id,async(q) => {
-            const users = (await q.query(
-              "UPDATE auth.users u SET active=$1 WHERE u.tenant_id=$2 AND u.employee_id=$3 AND EXISTS(SELECT 1 FROM auth.grants g WHERE g.user_id=u.id AND g.role='employee') AND NOT EXISTS(SELECT 1 FROM auth.grants g WHERE g.user_id=u.id AND g.role<>'employee') RETURNING u.id",
-              [x.status==="active",a.tenant_id,id],
-            )).rows;
-            if(x.status==="inactive") for(const u of users)
-              await q.query("DELETE FROM auth.sessions WHERE user_id=$1",[u.id]);
+              await q.query("SET LOCAL ROLE hrms_auth");
+              const linked = (await q.query("SELECT id FROM auth.users WHERE tenant_id=$1 AND employee_id=$2 FOR UPDATE",[a.tenant_id,id])).rows[0];
+              if(linked) {
+                const grants = (await q.query("SELECT role FROM auth.grants WHERE user_id=$1",[linked.id])).rows;
+                if(grants.length>0 && grants.every((g:any) => g.role === "employee")) {
+                  await q.query("UPDATE auth.users SET name=$1,email=$2,active=$3 WHERE id=$4",
+                    [profile.name,profile.email.toLowerCase(),profile.status==="active",linked.id]);
+                  if(x.email!==undefined || x.status==="inactive")
+                    await q.query("DELETE FROM auth.sessions WHERE user_id=$1",[linked.id]);
+                }
+              }
+              return {ok:true,employee:profile};
           });
           return res.json(updated);
         }
@@ -1346,10 +1364,38 @@ export async function createApp(
             if (g.role === "firm_admin")
               bad(400, "Firm administrator grants are protected");
             await q.query("DELETE FROM auth.grants WHERE id=$1", [id]);
+            await q.query("DELETE FROM auth.sessions WHERE user_id=$1", [g.user_id]);
             await audit(q, a, "access.revoked", id, g.company_id, g.branch_id);
             return { ok: true };
           }),
         );
+      }
+      const adminUserMatch = path.match(/^\/admin-users\/([^/]+)$/);
+      if (adminUserMatch && method === "PATCH") {
+        if (!a.grants.some((g) => g.role === "firm_admin" && !g.company_id))
+          bad(403,"Firm administrator required");
+        const id = parseId(adminUserMatch[1]);
+        if (id === a.id) bad(403,"Use Change password for your own account");
+        const x = z.object({
+          name:z.string().trim().min(2).max(120).optional(),
+          email:z.string().email().max(160).optional(),
+          newPassword:z.string().min(14).max(200).optional(),
+        }).strict().refine((v) => Object.keys(v).length > 0).parse(req.body);
+        return res.json(await db.as("hrms_auth",a.id,async(q) => {
+          const user = object((await q.query(
+            "SELECT id,employee_id FROM auth.users WHERE id=$1 AND tenant_id=$2 FOR UPDATE",
+            [id,a.tenant_id],
+          )).rows);
+          const grants = (await q.query("SELECT role,company_id FROM auth.grants WHERE user_id=$1 AND tenant_id=$2",[id,a.tenant_id])).rows;
+          if (user.employee_id || grants.length===0 || grants.some((g:any) => !["company_admin","hr"].includes(g.role)))
+            bad(403,"Only standalone company and HR administrator accounts can be edited here");
+          await q.query("UPDATE auth.users SET name=coalesce($1,name),email=coalesce($2,email),password_hash=coalesce($3,password_hash) WHERE id=$4 AND tenant_id=$5",
+            [x.name??null,x.email?.toLowerCase()??null,x.newPassword?hashPassword(x.newPassword):null,id,a.tenant_id]);
+          if (x.email!==undefined || x.newPassword!==undefined)
+            await q.query("DELETE FROM auth.sessions WHERE user_id=$1",[id]);
+          await audit(q,a,"administrator.updated",id,grants[0].company_id);
+          return {ok:true};
+        }));
       }
       if (path === "/users" && method === "POST") {
         if (!a.grants.some((g) => g.role === "firm_admin" && !g.company_id))

@@ -71,10 +71,18 @@ test("employee login setup, scoped resets, and self-service password changes", a
     const hrReset = await hr.post(target).set("X-CSRF-Token",h.body.csrf).send({password:"hr-reset-password-2026"});
     assert.equal(hrReset.status,200,JSON.stringify(hrReset.body));
     assert.equal((await employee.post("/api/session").send({email:"employee3@example.test",password:"hr-reset-password-2026"})).status,200);
-    assert.equal((await company.patch(`/api/employees/${id}`).set("X-CSRF-Token",c.body.csrf).send({status:"inactive"})).status,200);
+    const edited = await hr.patch(`/api/employees/${id}`).set("X-CSRF-Token",h.body.csrf).send({name:"Updated Employee",email:"updated-employee3@example.test",department:"Operations",designation:"Senior Officer",employmentType:"Permanent",joinedOn:"2025-05-01"});
+    assert.equal(edited.status,200,JSON.stringify(edited.body));
+    assert.equal(edited.body.employee.email,"updated-employee3@example.test");
+    assert.equal(edited.body.employee.department,"Operations");
     assert.equal((await employee.get("/api/session")).status,401);
     assert.equal((await employee.post("/api/session").send({email:"employee3@example.test",password:"hr-reset-password-2026"})).status,401);
+    assert.equal((await employee.post("/api/session").send({email:"updated-employee3@example.test",password:"hr-reset-password-2026"})).status,200);
+    assert.equal((await company.patch(`/api/employees/${employeeId(20)}`).set("X-CSRF-Token",c.body.csrf).send({name:"Cross company"})).status,404);
+    assert.equal((await company.patch(`/api/employees/${id}`).set("X-CSRF-Token",c.body.csrf).send({status:"inactive"})).status,200);
+    assert.equal((await employee.get("/api/session")).status,401);
+    assert.equal((await employee.post("/api/session").send({email:"updated-employee3@example.test",password:"hr-reset-password-2026"})).status,401);
     assert.equal((await company.patch(`/api/employees/${id}`).set("X-CSRF-Token",c.body.csrf).send({status:"active"})).status,200);
-    assert.equal((await employee.post("/api/session").send({email:"employee3@example.test",password:"hr-reset-password-2026"})).status,200);
+    assert.equal((await employee.post("/api/session").send({email:"updated-employee3@example.test",password:"hr-reset-password-2026"})).status,200);
   } finally { await app.close(); await db.close(); }
 });

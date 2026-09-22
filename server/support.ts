@@ -32,14 +32,14 @@ export const articles = [
     title: "Company and branch access",
     tags: "permissions access roles company branch forbidden administrator",
     steps:
-      "A Firm Administrator grants access in Access control by choosing a user, role, company and optional branch. Company administrators cannot grant themselves another company. If an expected company is missing, contact your firm administrator.",
+      "A Firm Administrator grants access in Access control by choosing a user, role, company and optional branch. The firm head can edit company and HR administrator names, login emails and passwords there, or remove a selected role; removal signs out that account and preserves audit history. Company administrators cannot grant themselves another company. If an expected company is missing, contact your firm administrator.",
   },
   {
     id: "employee-add",
     title: "Add someone to your team",
     tags: "employee add onboarding joining profile",
     steps:
-      "Open People and select Add employee. Choose the company and branch, employee code, employment type and joining date. Assign a salary and an effective policy separately. Only active, permitted companies appear in the selectors.",
+      "Open People and select Add employee. Choose the company and branch, employee code, employment type and joining date. Firm, company and HR administrators can click a person's name to view and edit profile details, set or reset their login, or remove them from active people. Removal archives the person, blocks employee login and frees an active employee slot without erasing attendance or payroll history. Use the Inactive filter to restore them; restoration needs a free slot. Assign a salary and an effective policy separately.",
   },
   {
     id: "employee-login",
