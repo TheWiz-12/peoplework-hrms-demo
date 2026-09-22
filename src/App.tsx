@@ -2077,6 +2077,24 @@ export default function App() {
                                         {b.name}
                                         <small>{b.timezone}</small>
                                       </span>
+                                      {session.grants.some((g: any) =>
+                                        (g.role === "firm_admin" || g.role === "company_admin") &&
+                                        (!g.company_id || g.company_id === c.id) &&
+                                        (!g.branch_id || g.branch_id === b.id)) && (
+                                        <span className="branch-actions">
+                                          <button className="text-button" onClick={() => setModal({
+                                            title: `Rename ${b.name}`,
+                                            fields: [{ key: "name", label: "Branch name", value: b.name }],
+                                            save: (v: any) => mutate(`/branches/${b.id}`, { name: v.name }, "PATCH"),
+                                          })}>Rename</button>
+                                          <button className="text-button danger" onClick={() => setModal({
+                                            title: `Remove ${b.name}?`,
+                                            description: "Only an unused branch can be removed. Employees, historical records, assigned users, or biometric devices must be moved first.",
+                                            fields: [],
+                                            save: () => mutate(`/branches/${b.id}`, {}, "DELETE"),
+                                          })}>Remove</button>
+                                        </span>
+                                      )}
                                     </div>
                                   ))}
                               </div>

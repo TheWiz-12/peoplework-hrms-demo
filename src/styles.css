@@ -1161,6 +1161,15 @@ tbody tr:hover {
   color: #a4af9d;
   margin-top: 4px;
 }
+.branch-actions {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+}
+.branch-actions .text-button {
+  font-size: 11px;
+  white-space: nowrap;
+}
 .report-grid {
   padding: 25px;
   display: grid;

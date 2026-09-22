@@ -169,6 +169,11 @@ export async function migrate(db: Database) {
         `DROP POLICY IF EXISTS scoped_update ON ${table}; CREATE POLICY scoped_update ON ${table} FOR UPDATE TO hrms_app USING (${check("write")}) WITH CHECK (${check("write")});`,
       );
     }
+    // Branch removal is the only application-level hard delete. PostgreSQL
+    // checks the same tenant/company/branch scope as the other operations.
+    await q.query(
+      "GRANT DELETE ON branches TO hrms_app; DROP POLICY IF EXISTS scoped_delete ON branches; CREATE POLICY scoped_delete ON branches FOR DELETE TO hrms_app USING (auth.can_access(tenant_id,company_id,id,NULL,'organization.write'));",
+    );
     // Audit writes require the authenticated actor; edits and deletes are forbidden.
     await q.query(
       "REVOKE UPDATE ON audit_logs,attendance,salary_assignments FROM hrms_app; DROP POLICY scoped_insert ON audit_logs; CREATE POLICY scoped_insert ON audit_logs FOR INSERT TO hrms_app WITH CHECK(actor_id=nullif(current_setting('app.actor_id',true),'')::uuid AND auth.audit_scope(tenant_id,company_id,branch_id)); ",

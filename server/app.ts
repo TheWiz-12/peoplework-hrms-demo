@@ -484,6 +484,50 @@ export async function createApp(
           }),
         );
       }
+      const branchMatch = path.match(/^\/branches\/([0-9a-f-]+)$/i);
+      if (branchMatch && (method === "PATCH" || method === "DELETE")) {
+        const id = parseId(branchMatch[1]);
+        if (!a.grants.some((g) => g.role === "firm_admin" || g.role === "company_admin"))
+          bad(403, "Firm or company administrator required");
+        const branchRecord = await scope(a, async (q) => object((await q.query(
+          "SELECT id,company_id,name FROM branches WHERE id=$1 AND tenant_id=$2", [id,a.tenant_id],
+        )).rows));
+        must(a, "organization.write", branchRecord.company_id, id);
+        if (!a.grants.some((g) =>
+          (g.role === "firm_admin" || g.role === "company_admin") &&
+          (!g.company_id || g.company_id === branchRecord.company_id) &&
+          (!g.branch_id || g.branch_id === id)))
+          bad(403, "Firm or company administrator required for this branch");
+        if (method === "PATCH") {
+          const x = z.object({name:z.string().trim().min(2).max(120)}).strict().parse(req.body);
+          return res.json(await scope(a, async (q) => {
+            const updated = object((await q.query(
+              "UPDATE branches SET name=$1 WHERE id=$2 AND tenant_id=$3 AND company_id=$4 RETURNING id,name",
+              [x.name,id,a.tenant_id,branchRecord.company_id],
+            )).rows);
+            await audit(q,a,"branch.renamed",id,branchRecord.company_id,id);
+            return updated;
+          }));
+        }
+        const linkedAccess = await db.as("hrms_auth",a.id,async(q) => (await q.query(
+          "SELECT EXISTS(SELECT 1 FROM auth.grants WHERE tenant_id=$1 AND branch_id=$2) OR EXISTS(SELECT 1 FROM auth.devices WHERE tenant_id=$1 AND branch_id=$2) AS used",
+          [a.tenant_id,id],
+        )).rows[0].used);
+        if (linkedAccess) bad(409,"Branch has assigned users or biometric devices. Reassign them before removing it.");
+        return res.json(await scope(a, async(q) => {
+          const linked = (await q.query(
+            "SELECT EXISTS(SELECT 1 FROM employees WHERE branch_id=$1) OR EXISTS(SELECT 1 FROM policies WHERE branch_id=$1) OR EXISTS(SELECT 1 FROM attendance WHERE branch_id=$1) OR EXISTS(SELECT 1 FROM leave_requests WHERE branch_id=$1) OR EXISTS(SELECT 1 FROM records WHERE branch_id=$1) OR EXISTS(SELECT 1 FROM salary_assignments WHERE branch_id=$1) OR EXISTS(SELECT 1 FROM payroll_runs WHERE branch_id=$1) AS used",
+            [id],
+          )).rows[0].used;
+          if (linked) bad(409,"Branch has employees or historical records. Move or resolve them before removing it.");
+          object((await q.query(
+            "DELETE FROM branches WHERE id=$1 AND tenant_id=$2 AND company_id=$3 RETURNING id",
+            [id,a.tenant_id,branchRecord.company_id],
+          )).rows);
+          await audit(q,a,"branch.removed",id,branchRecord.company_id);
+          return {id,removed:true};
+        }));
+      }
       if (path === "/employees" && method === "GET") {
         must(a, "employees.read");
         return res.json(

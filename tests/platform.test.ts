@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import request from "supertest";
 import { createApp } from "../server/app";
 import { ids } from "../server/seed";
-import { parseEmployeeCsv } from "../src/EmployeeImport";
+import { detectEmployeeFileFormat, parseEmployeeCsv } from "../src/EmployeeImport";
 
 test("CSV parser handles quotes, required headers and malformed rows",()=>{
   const rows=parseEmployeeCsv('code,name,email,department,designation,employmentType,joinedOn\nE77,"Jane, Doe",jane@example.test,HR,Officer,Permanent,2026-01-02');
   assert.equal(rows[0].name,"Jane, Doe");
   assert.throws(()=>parseEmployeeCsv('code,name\nA,A'),/Missing columns/);
+  assert.equal(detectEmployeeFileFormat(new TextEncoder().encode('PK\u0003\u0004Index/Document.iwa')),"numbers");
+  assert.equal(detectEmployeeFileFormat(new TextEncoder().encode('code,name\nA,A')),"csv");
 });
 
 test("platform owner, tenant isolation, import and limits",async()=>{
@@ -41,10 +43,20 @@ test("platform owner, tenant isolation, import and limits",async()=>{
     assert.equal(firmCreatedCompany.status,201,JSON.stringify(firmCreatedCompany.body));
     const branch=await firm.post("/api/branches").set("X-CSRF-Token",otherCsrf).send({companyId:company.body.id,name:"Test Branch"});
     assert.equal(branch.status,201,JSON.stringify(branch.body));
+    const renamed=await firm.patch(`/api/branches/${branch.body.id}`).set("X-CSRF-Token",otherCsrf).send({name:"Renamed Branch"});
+    assert.equal(renamed.status,200,JSON.stringify(renamed.body));
+    assert.equal(renamed.body.name,"Renamed Branch");
+    assert.equal((await firm.patch(`/api/branches/${branch.body.id}`).send({name:"No CSRF"})).status,403);
+    const spare=await firm.post("/api/branches").set("X-CSRF-Token",otherCsrf).send({companyId:company.body.id,name:"Unused Branch"});
+    assert.equal(spare.status,201);
+    assert.equal((await firm.delete(`/api/branches/${spare.body.id}`).set("X-CSRF-Token",otherCsrf).send({})).status,200);
+    assert.equal((await firm.delete(`/api/branches/${ids.a1}`).set("X-CSRF-Token",otherCsrf).send({})).status,404);
     const row={code:"T001",name:"Test Employee",email:"test.employee@example.test",department:"HR",designation:"Officer",employmentType:"Permanent",joinedOn:"2026-01-02"};
     const imported=await firm.post("/api/employees/import").set("X-CSRF-Token",otherCsrf).send({companyId:company.body.id,branchId:branch.body.id,source:"csv",rows:[row]});
     assert.equal(imported.status,201,JSON.stringify(imported.body));
     assert.equal(imported.body.imported,1);
+    const blockedDelete=await firm.delete(`/api/branches/${branch.body.id}`).set("X-CSRF-Token",otherCsrf).send({});
+    assert.equal(blockedDelete.status,409,JSON.stringify(blockedDelete.body));
     const over=await firm.post("/api/employees/import").set("X-CSRF-Token",otherCsrf).send({companyId:company.body.id,branchId:branch.body.id,source:"csv",rows:[{...row,code:"T002"}]});
     assert.notEqual(over.status,201);
     const capacityFirm=await owner.post("/api/platform/tenants").set("X-CSRF-Token",csrf).send({firmName:"Capacity Firm",adminName:"Capacity Admin",adminEmail:"capacity-admin@example.test",adminPassword:"capacity-admin-password-2026",employeeLimit:50});
@@ -59,6 +71,14 @@ test("platform owner, tenant isolation, import and limits",async()=>{
     assert.equal(listAdmins.status,200,JSON.stringify(listAdmins.body));
     assert.equal(listAdmins.body.length,3);
     assert.equal(listAdmins.body.find((u:any)=>u.role==="company_admin").name,"Company Owner");
+    const companyAdmin=request.agent(app.getHttpAdapter().getInstance());
+    const companyAdminLogin=await companyAdmin.post("/api/session").send({email:"company-owner@example.test",password:"company-owner-password"});
+    assert.equal(companyAdminLogin.status,200);
+    const companyBranch=await companyAdmin.post("/api/branches").set("X-CSRF-Token",companyAdminLogin.body.csrf).send({companyId:adminCompany.body.id,name:"Admin Branch"});
+    assert.equal(companyBranch.status,201,JSON.stringify(companyBranch.body));
+    assert.equal((await companyAdmin.patch(`/api/branches/${companyBranch.body.id}`).set("X-CSRF-Token",companyAdminLogin.body.csrf).send({name:"Admin Branch Renamed"})).status,200);
+    assert.equal((await companyAdmin.patch(`/api/branches/${branch.body.id}`).set("X-CSRF-Token",companyAdminLogin.body.csrf).send({name:"Cross tenant"})).status,404);
+    assert.equal((await companyAdmin.delete(`/api/branches/${companyBranch.body.id}`).set("X-CSRF-Token",companyAdminLogin.body.csrf).send({})).status,200);
     assert.equal(listAdmins.body.find((u:any)=>u.role==="hr").email,"hr-owner@example.test");
     assert.ok(listAdmins.body.every((u:any)=>!Object.hasOwn(u,"password")&&!Object.hasOwn(u,"password_hash")));
     assert.equal((await firm.get(`/api/platform/tenants/${adminFirm.body.id}/administrators`)).status,403);
