@@ -242,12 +242,14 @@ function Modal({
   title,
   description,
   fields,
+  hideSave,
   onClose,
   onSave,
 }: {
   title: string;
   description?: string;
   fields: Field[];
+  hideSave?: boolean;
   onClose: () => void;
   onSave: (v: any) => Promise<void>;
 }) {
@@ -425,7 +427,7 @@ function Modal({
             >
               Cancel
             </button>
-            <button className="button primary" disabled={busy}>
+            {!hideSave && <button className="button primary" disabled={busy}>
               {busy ? (
                 <Loader2 size={16} className="spin" />
               ) : (
@@ -433,14 +435,14 @@ function Modal({
               )}
               Save{" "}
               {title.toLowerCase().includes("policy") ? "draft" : "changes"}
-            </button>
+            </button>}
           </div>
         </form>
       </div>
     </div>
   );
 }
-function Login({ onLogin }: { onLogin: () => void }) {
+function Login({ onLogin, notice }: { onLogin: () => void; notice?: string }) {
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [error, setError] = useState(""),
@@ -491,6 +493,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
           <Badge tone="green">Development preview</Badge>
           <h2>Welcome to your workspace</h2>
           <p>Sign in to bring your people together.</p>
+          {notice && <div className="import-note" role="status">{notice}</div>}
           <form
             onSubmit={async (e) => {
               e.preventDefault();
@@ -580,6 +583,7 @@ export default function App() {
     [loading, setLoading] = useState(false),
     [error, setError] = useState(""),
     [toast, setToast] = useState(""),
+    [loginNotice, setLoginNotice] = useState(""),
     [refresh, setRefresh] = useState(0),
     [modal, setModal] = useState<any>(null),
     [showImport, setShowImport] = useState(false),
@@ -688,6 +692,37 @@ export default function App() {
     await api(path, method, body);
     saved();
   };
+  const openEmployeeLogin = async (e: any) => {
+    try {
+      const details = await api(`/employees/${e.id}/login`);
+      setModal({
+        title: details.loginReady ? `Reset ${e.name}'s password` : `Set up ${e.name}'s login`,
+        description: `Work email: ${details.workEmail}. ${details.managedSeparately ? "This employee is linked to an administrator account; manage that account separately." : details.needsEmailSync ? "An older login uses a different address. Set a new password to switch it to this work email and sign out old sessions." : details.loginReady ? "The current password cannot be viewed. Setting a new password signs out this employee's existing sessions." : "Set an initial password, then share it privately with the employee. They can change it after signing in."}`,
+        hideSave: details.managedSeparately,
+        fields: details.managedSeparately ? [] : [{key:"password",label:"New password (14+ characters)",type:"password"}],
+        save: details.managedSeparately ? async() => {} : (v:any) => mutate(`/employees/${e.id}/login`,{password:v.password}),
+      });
+    } catch (err:any) { setError(err.message); }
+  };
+  const openPasswordChange = () => setModal({
+    title: "Change your password",
+    description: `Signed in as ${session.user.email}. Enter your current password, then a new password. You will sign in again after it changes.`,
+    fields: [
+      {key:"currentPassword",label:"Current password",type:"password"},
+      {key:"newPassword",label:"New password (14+ characters)",type:"password"},
+      {key:"confirmPassword",label:"Confirm new password",type:"password"},
+    ],
+    save: async(v:any) => {
+      if(v.newPassword!==v.confirmPassword) throw new Error("New passwords do not match");
+      await api("/session/password","PATCH",{currentPassword:v.currentPassword,newPassword:v.newPassword});
+      csrf="";
+      setSession(null);
+      setCompany("");
+      setLoginNotice("Password changed. Sign in with your new password.");
+      setChat([]);
+      go("dashboard");
+    },
+  });
   const companyOptions = org.companies
     .filter((c: any) => !company || c.id === company)
     .map((c: any) => ({ value: c.id, label: c.name }));
@@ -1156,7 +1191,7 @@ export default function App() {
         Preparing your workspace…
       </div>
     );
-  if (!session) return <Login onLogin={boot} />;
+  if (!session) return <Login onLogin={() => { setLoginNotice(""); boot(); }} notice={loginNotice} />;
   if (session.grants?.some((g:any)=>g.role==="platform_owner"))
     return <PlatformWorkspace api={api} onLogout={async()=>{await api("/session","DELETE",{});csrf="";setSession(null)}}/>;
   // Some utility views (for example Audit and Access) are opened from a
@@ -1380,6 +1415,7 @@ export default function App() {
                 <strong>{session.user.name.split(" ")[0]}</strong>
                 <small>{pretty(session.grants[0]?.role || "Member")}</small>
               </div>
+              <button className="text-button profile-password" aria-label="Change password" onClick={openPasswordChange}><LockKeyhole size={14}/><span>Change password</span></button>
               <button
                 className="icon-button"
                 aria-label="Sign out"
@@ -1820,7 +1856,9 @@ export default function App() {
                                 <div className="person">
                                   <Avatar name={e.name} />
                                   <div>
-                                    <strong>{e.name}</strong>
+                                    {session.grants.some((g:any)=>["firm_admin","company_admin","hr"].includes(g.role)&&(!g.company_id||g.company_id===e.company_id)&&(!g.branch_id||g.branch_id===e.branch_id))
+                                      ? <button className="person-name-button" onClick={()=>openEmployeeLogin(e)}>{e.name}</button>
+                                      : <strong>{e.name}</strong>}
                                     <small>{e.email}</small>
                                   </div>
                                 </div>
@@ -2441,6 +2479,7 @@ export default function App() {
           title={modal.title}
           description={modal.description}
           fields={modal.fields}
+          hideSave={modal.hideSave}
           onClose={() => setModal(null)}
           onSave={modal.save}
         />

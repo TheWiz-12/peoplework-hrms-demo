@@ -272,6 +272,26 @@ export async function createApp(
         res.clearCookie("pw_session", { path: "/" });
         return res.json({ ok: true });
       }
+      if (path === "/session/password" && method === "PATCH") {
+        const x = z.object({
+          currentPassword: z.string().min(1).max(200),
+          newPassword: z.string().min(14).max(200),
+        }).strict().parse(req.body);
+        const changed = await db.as("hrms_auth", a.id, async(q) => {
+          const u = object((await q.query(
+            "SELECT password_hash FROM auth.users WHERE id=$1 AND tenant_id=$2 FOR UPDATE",
+            [a.id,a.tenant_id],
+          )).rows);
+          if (!checkPassword(x.currentPassword,u.password_hash)) bad(403,"Current password is incorrect");
+          if (checkPassword(x.newPassword,u.password_hash)) bad(400,"Choose a different new password");
+          await q.query("UPDATE auth.users SET password_hash=$1 WHERE id=$2",[hashPassword(x.newPassword),a.id]);
+          await q.query("DELETE FROM auth.sessions WHERE user_id=$1",[a.id]);
+          await audit(q,a,"account.password.changed",a.id);
+          return {ok:true};
+        });
+        res.clearCookie("pw_session",{path:"/"});
+        return res.json(changed);
+      }
       const platformOwner = a.grants.some((g) => g.role === "platform_owner");
       if (path.startsWith("/platform")) {
         if (!platformOwner) bad(403, "AS Communications platform owner required");
@@ -593,6 +613,53 @@ export async function createApp(
           return {batchId,imported:x.rows.length};
         }));
       }
+      const employeeLoginMatch = path.match(/^\/employees\/([^/]+)\/login$/);
+      if (employeeLoginMatch && (method === "GET" || method === "POST")) {
+        const id = parseId(employeeLoginMatch[1]);
+        const e = await scope(a,async(q) => object((await q.query(
+          "SELECT id,tenant_id,company_id,branch_id,name,email,status FROM employees WHERE id=$1",
+          [id],
+        )).rows));
+        const adminGrant = a.grants.some((g) =>
+          ["firm_admin","company_admin","hr"].includes(g.role) &&
+          (!g.company_id || g.company_id === e.company_id) &&
+          (!g.branch_id || g.branch_id === e.branch_id));
+        if (!adminGrant) bad(403,"Firm, company, or HR administrator required for this employee");
+        must(a,"employees.write",e.company_id,e.branch_id);
+        if (method === "GET") {
+          const account = await db.as("hrms_auth",a.id,async(q) => (await q.query(
+            "SELECT u.id,u.email,u.active,EXISTS(SELECT 1 FROM auth.grants g WHERE g.user_id=u.id AND g.tenant_id=u.tenant_id AND g.role='employee' AND g.company_id=$3) AS employee_login FROM auth.users u WHERE u.tenant_id=$1 AND u.employee_id=$2",
+            [a.tenant_id,id,e.company_id],
+          )).rows[0]);
+          return res.json({employeeId:id,name:e.name,workEmail:e.email,loginReady:!!account?.employee_login&&account.active&&account.email===e.email.toLowerCase(),needsEmailSync:!!account?.employee_login&&account.email!==e.email.toLowerCase(),managedSeparately:!!account&&!account.employee_login});
+        }
+        if (e.status !== "active") bad(409,"Activate this employee before setting up sign-in");
+        const x = z.object({password:z.string().min(14).max(200)}).strict().parse(req.body);
+        const result = await db.as("hrms_auth",a.id,async(q) => {
+          const linked = (await q.query(
+            "SELECT id,email FROM auth.users WHERE tenant_id=$1 AND employee_id=$2 FOR UPDATE",
+            [a.tenant_id,id],
+          )).rows[0];
+          if (linked) {
+            const grants = (await q.query("SELECT role,company_id FROM auth.grants WHERE user_id=$1",[linked.id])).rows;
+            if (grants.some((g:any) => g.role !== "employee" || g.company_id !== e.company_id))
+              bad(409,"This employee is linked to an administrator account. Manage that account separately.");
+            await q.query("UPDATE auth.users SET email=$1,name=$2,password_hash=$3,active=true WHERE id=$4 AND tenant_id=$5",
+              [e.email.toLowerCase(),e.name,hashPassword(x.password),linked.id,a.tenant_id]);
+            await q.query("DELETE FROM auth.sessions WHERE user_id=$1",[linked.id]);
+            await audit(q,a,"employee.login.reset",id,e.company_id,e.branch_id);
+            return {loginReady:true,workEmail:e.email,created:false};
+          }
+          const accountId = randomUUID();
+          await q.query("INSERT INTO auth.users(id,tenant_id,email,name,password_hash,employee_id) VALUES($1,$2,$3,$4,$5,$6)",
+            [accountId,a.tenant_id,e.email.toLowerCase(),e.name,hashPassword(x.password),id]);
+          await q.query("INSERT INTO auth.grants(id,tenant_id,user_id,role,company_id,branch_id,permissions) VALUES($1,$2,$3,'employee',$4,$5,$6)",
+            [randomUUID(),a.tenant_id,accountId,e.company_id,e.branch_id,[...roles.employee,"organization.read"]]);
+          await audit(q,a,"employee.login.created",id,e.company_id,e.branch_id);
+          return {loginReady:true,workEmail:e.email,created:true};
+        });
+        return res.status(result.created?201:200).json(result);
+      }
       const empMatch = path.match(/^\/employees\/([^/]+)$/);
       if (empMatch) {
         const id = parseId(empMatch[1]);
@@ -610,8 +677,7 @@ export async function createApp(
             .object({ status: z.enum(["active", "inactive"]) })
             .strict()
             .parse(req.body);
-          return res.json(
-            await scope(a, async (q) => {
+          const updated = await scope(a, async (q) => {
               const e = object(
                 (await q.query("SELECT * FROM employees WHERE id=$1", [id]))
                   .rows,
@@ -630,8 +696,17 @@ export async function createApp(
                 e.branch_id,
               );
               return { ok: true };
-            }),
-          );
+            });
+          // Inactive employees cannot keep using an employee-only login.
+          await db.as("hrms_auth",a.id,async(q) => {
+            const users = (await q.query(
+              "UPDATE auth.users u SET active=$1 WHERE u.tenant_id=$2 AND u.employee_id=$3 AND EXISTS(SELECT 1 FROM auth.grants g WHERE g.user_id=u.id AND g.role='employee') AND NOT EXISTS(SELECT 1 FROM auth.grants g WHERE g.user_id=u.id AND g.role<>'employee') RETURNING u.id",
+              [x.status==="active",a.tenant_id,id],
+            )).rows;
+            if(x.status==="inactive") for(const u of users)
+              await q.query("DELETE FROM auth.sessions WHERE user_id=$1",[u.id]);
+          });
+          return res.json(updated);
         }
       }
       if (path === "/policies" && method === "GET") {
@@ -1443,6 +1518,15 @@ export async function createApp(
       windowMs: 900000,
       limit: options.memory ? 1000 : 40,
       skip: (req) => req.method !== "POST",
+      legacyHeaders: false,
+    }),
+  );
+  app.use(
+    "/api/session/password",
+    rateLimit({
+      windowMs: 900000,
+      limit: options.memory ? 1000 : 10,
+      skip: (req) => req.method !== "PATCH",
       legacyHeaders: false,
     }),
   );

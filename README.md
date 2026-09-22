@@ -22,7 +22,7 @@ npm run build
 | Area | Delivered behaviour |
 |---|---|
 | Tenancy and scope | Tenant → company → branch data model; firm, company, HR, manager and employee role scopes. Company A cannot list, fetch, update or export Company B records. |
-| People and masters | Employee directory; dynamic master-data records; employment type, policy and salary assignment with effective dates. |
+| People and masters | Employee directory; dynamic master-data records; employment type, policy and salary assignment with effective dates. Firm/company/HR admins can open an employee in People to set up or reset their login using the work email. Employees can change their own password after sign-in. Passwords are never displayed or recoverable. |
 | Leave and policy | Versioned, immutable published policies; company/branch/effective-date/employment-type resolution; allowance and overlap checks; separation from policy visibility. |
 | Attendance | Manual audited punches plus signed biometric event ingestion with device-bound location, nonce replay protection and idempotency. |
 | Payroll | Integer-paise salary snapshots, company-period uniqueness, draft → review → two-person lock. This is **not** statutory/payroll-payment ready yet. |

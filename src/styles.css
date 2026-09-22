@@ -531,6 +531,25 @@ textarea {
   color: #8c9791;
   margin-top: 3px;
 }
+.profile-password {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  font-size: 10px;
+}
+.person-name-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #244f43;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+}
+.person-name-button:hover { text-decoration: underline; }
+.person-name-button:focus-visible { outline: 2px solid #285b4b; outline-offset: 3px; }
 .content {
   padding: 30px 34px 16px;
   max-width: 1720px;
@@ -1897,6 +1916,8 @@ tbody tr:hover {
     padding-left: 6px;
     gap: 1px;
   }
+  .profile-password span { display: none; }
+  .profile-password { padding: 7px; }
   .profile > .avatar {
     width: 28px;
     height: 28px;

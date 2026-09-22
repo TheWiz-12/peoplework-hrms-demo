@@ -42,6 +42,13 @@ export const articles = [
       "Open People and select Add employee. Choose the company and branch, employee code, employment type and joining date. Assign a salary and an effective policy separately. Only active, permitted companies appear in the selectors.",
   },
   {
+    id: "employee-login",
+    title: "Employee sign-in and password changes",
+    tags: "employee login sign in work email password reset change credentials people portal",
+    steps:
+      "A firm, company or HR administrator opens People and clicks the employee's name to view the work email and set an initial password or reset it. Share the temporary password privately; existing passwords cannot be viewed. The employee signs in with that work email and password, then uses Change password beside their profile. A password reset signs out existing sessions. Imported employees need this login setup after import.",
+  },
+  {
     id: "employee-import",
     title: "Import employees from another system",
     tags: "import csv sql server access database migration upload spreadsheet employee",
