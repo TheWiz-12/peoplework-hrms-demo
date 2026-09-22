@@ -312,7 +312,13 @@ export async function createApp(
           if (id === a.tenant_id) bad(403,"Cannot change the owner control plane");
           return res.json(await db.owner(async(q)=>{
             const current=object((await q.query("SELECT * FROM platform_tenants WHERE tenant_id=$1 FOR UPDATE",[id])).rows);
-            await q.query("UPDATE platform_tenants SET status=$1,employee_limit=$2 WHERE tenant_id=$3",[x.status||current.status,x.employeeLimit??current.employee_limit,id]);
+            if(x.employeeLimit!==undefined) {
+              const allocation=(await q.query("SELECT coalesce(sum(pcl.employee_limit),0)::int AS allocated FROM platform_company_limits pcl JOIN companies c ON c.id=pcl.company_id WHERE c.tenant_id=$1",[id])).rows[0].allocated;
+              const employees=(await q.query("SELECT count(*)::int AS total FROM employees WHERE tenant_id=$1",[id])).rows[0].total;
+              const minimum=Math.max(allocation,employees);
+              if(x.employeeLimit<minimum) bad(409,`Firm needs a limit of at least ${minimum} for existing company allocations and employees`);
+              await q.query("UPDATE platform_tenants SET status=$1,employee_limit=$2 WHERE tenant_id=$3",[x.status||current.status,x.employeeLimit,id]);
+            } else if(x.status) await q.query("UPDATE platform_tenants SET status=$1 WHERE tenant_id=$2",[x.status,id]);
             if(x.status==="suspended") await q.query("DELETE FROM auth.sessions WHERE user_id IN(SELECT id FROM auth.users WHERE tenant_id=$1)",[id]);
             await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,$3,$4)",[randomUUID(),a.id,"tenant.updated",id]);
             return {ok:true};
@@ -321,8 +327,11 @@ export async function createApp(
         if (path === "/platform/companies" && method === "POST") {
           const x=z.object({tenantId:uuid,name:z.string().trim().min(2).max(120),code:z.string().regex(/^[A-Z0-9_-]{2,12}$/),employeeLimit:z.number().int().min(1).max(100000)}).strict().parse(req.body);
           return res.status(201).json(await db.owner(async(q)=>{
-            const tenant=object((await q.query("SELECT * FROM platform_tenants WHERE tenant_id=$1 AND tenant_id<>$2",[x.tenantId,a.tenant_id])).rows);
+            const tenant=object((await q.query("SELECT pt.*,t.name FROM platform_tenants pt JOIN tenants t ON t.id=pt.tenant_id WHERE pt.tenant_id=$1 AND pt.tenant_id<>$2 FOR UPDATE",[x.tenantId,a.tenant_id])).rows);
             if(tenant.status!=="active") bad(409,"Firm is suspended");
+            const allocated=(await q.query("SELECT coalesce(sum(pcl.employee_limit),0)::int AS total FROM platform_company_limits pcl JOIN companies c ON c.id=pcl.company_id WHERE c.tenant_id=$1",[x.tenantId])).rows[0].total;
+            const remaining=tenant.employee_limit-allocated;
+            if(x.employeeLimit>remaining) bad(409,`Only ${Math.max(0,remaining)} employee slots remain in ${tenant.name}; increase the firm limit or reduce another company limit`);
             const id=randomUUID();
             await q.query("INSERT INTO companies(id,tenant_id,name,code) VALUES($1,$2,$3,$4)",[id,x.tenantId,x.name,x.code]);
             await q.query("UPDATE platform_company_limits SET employee_limit=$2 WHERE company_id=$1",[id,x.employeeLimit]);
@@ -353,8 +362,17 @@ export async function createApp(
           const id=parseId(companyMatch[1]);
           const x=z.object({status:z.enum(["active","suspended"]).optional(),employeeLimit:z.number().int().min(1).max(100000).optional()}).strict().refine(v=>v.status!==undefined || v.employeeLimit!==undefined).parse(req.body);
           return res.json(await db.owner(async(q)=>{
-            const current=object((await q.query("SELECT pcl.*,c.tenant_id FROM platform_company_limits pcl JOIN companies c ON c.id=pcl.company_id WHERE pcl.company_id=$1 AND c.tenant_id<>$2 FOR UPDATE",[id,a.tenant_id])).rows);
-            await q.query("UPDATE platform_company_limits SET status=$1,employee_limit=$2 WHERE company_id=$3",[x.status||current.status,x.employeeLimit??current.employee_limit,id]);
+            const company=object((await q.query("SELECT c.tenant_id,c.name FROM companies c WHERE c.id=$1 AND c.tenant_id<>$2",[id,a.tenant_id])).rows);
+            const firm=object((await q.query("SELECT employee_limit FROM platform_tenants WHERE tenant_id=$1 FOR UPDATE",[company.tenant_id])).rows);
+            const current=object((await q.query("SELECT * FROM platform_company_limits WHERE company_id=$1 FOR UPDATE",[id])).rows);
+            if(x.employeeLimit!==undefined) {
+              const used=(await q.query("SELECT count(*)::int AS total FROM employees WHERE company_id=$1",[id])).rows[0].total;
+              if(x.employeeLimit<used) bad(409,`${company.name} already has ${used} employees; its limit cannot be lower`);
+              const otherAllocated=(await q.query("SELECT coalesce(sum(pcl.employee_limit),0)::int AS total FROM platform_company_limits pcl JOIN companies c ON c.id=pcl.company_id WHERE c.tenant_id=$1 AND pcl.company_id<>$2",[company.tenant_id,id])).rows[0].total;
+              const available=firm.employee_limit-otherAllocated;
+              if(x.employeeLimit>current.employee_limit && x.employeeLimit>available) bad(409,`Only ${Math.max(0,available)} employee slots are available for ${company.name}; increase the firm limit or reduce another company limit`);
+              await q.query("UPDATE platform_company_limits SET status=$1,employee_limit=$2 WHERE company_id=$3",[x.status||current.status,x.employeeLimit,id]);
+            } else if(x.status) await q.query("UPDATE platform_company_limits SET status=$1 WHERE company_id=$2",[x.status,id]);
             if(x.status==="suspended") await q.query("DELETE FROM auth.sessions WHERE user_id IN(SELECT u.id FROM auth.users u JOIN auth.grants g ON g.user_id=u.id WHERE g.company_id=$1)",[id]);
             await q.query("INSERT INTO platform_audit(id,actor_id,action,target_id) VALUES($1,$2,'company.updated',$3)",[randomUUID(),a.id,id]);
             return {ok:true};

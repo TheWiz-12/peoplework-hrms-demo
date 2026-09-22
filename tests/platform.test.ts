@@ -28,7 +28,7 @@ test("platform owner, tenant isolation, import and limits",async()=>{
     assert.ok(overview.body.totals.companies>=3);
     assert.equal((await owner.get("/api/employees")).status,403);
     assert.equal((await owner.post("/api/platform/tenants").send({})).status,403); // CSRF
-    const tenant=await owner.post("/api/platform/tenants").set("X-CSRF-Token",csrf).send({firmName:"Test Firm",adminName:"Test Admin",adminEmail:"test-admin@example.test",adminPassword:"tenant-test-password-2026",employeeLimit:1});
+    const tenant=await owner.post("/api/platform/tenants").set("X-CSRF-Token",csrf).send({firmName:"Test Firm",adminName:"Test Admin",adminEmail:"test-admin@example.test",adminPassword:"tenant-test-password-2026",employeeLimit:2});
     assert.equal(tenant.status,201,JSON.stringify(tenant.body));
     const company=await owner.post("/api/platform/companies").set("X-CSRF-Token",csrf).send({tenantId:tenant.body.id,name:"Test Company",code:"TEST",employeeLimit:1});
     assert.equal(company.status,201,JSON.stringify(company.body));
@@ -47,6 +47,24 @@ test("platform owner, tenant isolation, import and limits",async()=>{
     assert.equal(imported.body.imported,1);
     const over=await firm.post("/api/employees/import").set("X-CSRF-Token",otherCsrf).send({companyId:company.body.id,branchId:branch.body.id,source:"csv",rows:[{...row,code:"T002"}]});
     assert.notEqual(over.status,201);
+    const capacityFirm=await owner.post("/api/platform/tenants").set("X-CSRF-Token",csrf).send({firmName:"Capacity Firm",adminName:"Capacity Admin",adminEmail:"capacity-admin@example.test",adminPassword:"capacity-admin-password-2026",employeeLimit:50});
+    assert.equal(capacityFirm.status,201,JSON.stringify(capacityFirm.body));
+    const first=await owner.post("/api/platform/companies").set("X-CSRF-Token",csrf).send({tenantId:capacityFirm.body.id,name:"First Company",code:"FIRST",employeeLimit:30});
+    assert.equal(first.status,201,JSON.stringify(first.body));
+    const tooMany=await owner.post("/api/platform/companies").set("X-CSRF-Token",csrf).send({tenantId:capacityFirm.body.id,name:"Second Company",code:"SECOND",employeeLimit:25});
+    assert.equal(tooMany.status,409);
+    assert.match(tooMany.body.error,/Only 20 employee slots remain/);
+    const second=await owner.post("/api/platform/companies").set("X-CSRF-Token",csrf).send({tenantId:capacityFirm.body.id,name:"Second Company",code:"SECOND",employeeLimit:20});
+    assert.equal(second.status,201,JSON.stringify(second.body));
+    const lowerFirm=await owner.patch(`/api/platform/tenants/${capacityFirm.body.id}`).set("X-CSRF-Token",csrf).send({employeeLimit:49});
+    assert.equal(lowerFirm.status,409);
+    assert.match(lowerFirm.body.error,/at least 50/);
+    const raiseCompany=await owner.patch(`/api/platform/companies/${second.body.id}`).set("X-CSRF-Token",csrf).send({employeeLimit:21});
+    assert.equal(raiseCompany.status,409);
+    await assert.rejects(db.owner(q=>q.query("UPDATE platform_company_limits SET employee_limit=21 WHERE company_id=$1",[second.body.id])),{code:"23514"});
+    const capacityOverview=await owner.get("/api/platform/overview");
+    assert.equal(capacityOverview.body.companies.filter((c:any)=>c.tenant_id===capacityFirm.body.id).length,2);
+    await db.init(); // repeated hosted-style migrations must preserve existing allocations
     const suspended=await owner.patch(`/api/platform/tenants/${tenant.body.id}`).set("X-CSRF-Token",csrf).send({status:"suspended"});
     assert.equal(suspended.status,200,JSON.stringify(suspended.body));
     assert.equal((await firm.get("/api/organization")).status,401);

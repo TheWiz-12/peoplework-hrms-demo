@@ -28,7 +28,7 @@ npm run build
 | Payroll | Integer-paise salary snapshots, company-period uniqueness, draft → review → two-person lock. This is **not** statutory/payroll-payment ready yet. |
 | Other modules | Usable scoped registers for performance, learning, canteen, contractors, gate passes, exits and support tickets. |
 | Support assistant | Curated product help with citations and escalation. It does not send prompts to OpenAI. An operator may configure a private local model only to rephrase a vetted article. |
-| Platform owner | Separate AS Communications control plane for firm/company provisioning, scoped administrator creation, suspension and employee capacity limits. Enabled only when `PLATFORM_OWNER_PASSWORD` is configured. |
+| Platform owner | Separate AS Communications control plane for firm/company provisioning, scoped administrator creation, suspension and employee capacity limits. Company limits reserve slots from the firm limit, so their sum cannot exceed it. Enabled only when `PLATFORM_OWNER_PASSWORD` is configured. |
 | Employee import | CSV preview and atomic, scope-checked batches; local read-only export helper for SQL Server, MS Access and PostgreSQL. See [employee import guide](docs/employee-import.md). |
 
 ## Security model

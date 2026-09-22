@@ -55,8 +55,11 @@ CREATE TABLE IF NOT EXISTS companies (id uuid PRIMARY KEY, tenant_id uuid NOT NU
 CREATE TABLE IF NOT EXISTS platform_company_limits (
  company_id uuid PRIMARY KEY REFERENCES companies(id),
  status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','suspended')),
- employee_limit integer NOT NULL DEFAULT 1000 CHECK(employee_limit BETWEEN 1 AND 100000)
+ employee_limit integer NOT NULL DEFAULT 1 CHECK(employee_limit BETWEEN 1 AND 100000)
 );
+-- Existing demo databases were created with a 1,000-slot default. Update the
+-- default in place; CREATE TABLE IF NOT EXISTS does not change old columns.
+ALTER TABLE platform_company_limits ALTER COLUMN employee_limit SET DEFAULT 1;
 CREATE TABLE IF NOT EXISTS platform_audit (
  id uuid PRIMARY KEY, actor_id uuid NOT NULL, action text NOT NULL,
  target_id uuid NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
@@ -72,7 +75,59 @@ CREATE TRIGGER companies_platform_initialize AFTER INSERT ON companies
 FOR EACH ROW EXECUTE FUNCTION platform_initialize_company();
 REVOKE ALL ON FUNCTION platform_initialize_company() FROM PUBLIC;
 INSERT INTO platform_tenants(tenant_id) SELECT id FROM tenants ON CONFLICT DO NOTHING;
-INSERT INTO platform_company_limits(company_id) SELECT id FROM companies ON CONFLICT DO NOTHING;
+INSERT INTO platform_company_limits(company_id)
+SELECT c.id FROM companies c WHERE NOT EXISTS
+  (SELECT 1 FROM platform_company_limits pcl WHERE pcl.company_id=c.id);
+-- A company limit reserves employee capacity from its parent firm. Locking the
+-- firm row serializes competing company creations and limit edits.
+CREATE OR REPLACE FUNCTION platform_validate_company_allocation() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+DECLARE firm_id uuid; firm_limit integer; allocated bigint; existing_employees bigint;
+BEGIN
+ SELECT tenant_id INTO firm_id FROM companies WHERE id=NEW.company_id;
+ SELECT employee_limit INTO firm_limit FROM platform_tenants WHERE tenant_id=firm_id FOR UPDATE;
+ IF firm_limit IS NULL THEN
+   RAISE EXCEPTION 'Firm employee limit is not configured' USING ERRCODE='23514';
+ END IF;
+ SELECT count(*) INTO existing_employees FROM employees WHERE company_id=NEW.company_id;
+ IF NEW.employee_limit < existing_employees THEN
+   RAISE EXCEPTION 'Company limit cannot be lower than its current employee count' USING ERRCODE='23514';
+ END IF;
+ SELECT coalesce(sum(pcl.employee_limit),0) INTO allocated
+ FROM platform_company_limits pcl JOIN companies c ON c.id=pcl.company_id
+ WHERE c.tenant_id=firm_id AND pcl.company_id<>NEW.company_id;
+ IF TG_OP='UPDATE' THEN
+   IF NEW.company_id=OLD.company_id AND NEW.employee_limit<OLD.employee_limit THEN
+     RETURN NEW;
+   END IF;
+ END IF;
+ IF allocated + NEW.employee_limit > firm_limit THEN
+   RAISE EXCEPTION 'Company allocation exceeds remaining firm employee capacity' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+DROP TRIGGER IF EXISTS company_allocation_guard ON platform_company_limits;
+CREATE TRIGGER company_allocation_guard BEFORE INSERT OR UPDATE OF employee_limit,company_id ON platform_company_limits
+FOR EACH ROW EXECUTE FUNCTION platform_validate_company_allocation();
+REVOKE ALL ON FUNCTION platform_validate_company_allocation() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION platform_validate_firm_allocation() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+DECLARE allocated bigint; existing_employees bigint;
+BEGIN
+ SELECT coalesce(sum(pcl.employee_limit),0) INTO allocated
+ FROM platform_company_limits pcl JOIN companies c ON c.id=pcl.company_id
+ WHERE c.tenant_id=NEW.tenant_id;
+ SELECT count(*) INTO existing_employees FROM employees WHERE tenant_id=NEW.tenant_id;
+ IF NEW.employee_limit < allocated OR NEW.employee_limit < existing_employees THEN
+   RAISE EXCEPTION 'Firm limit cannot be lower than allocated company limits or current employees' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END; $$;
+DROP TRIGGER IF EXISTS firm_allocation_guard ON platform_tenants;
+CREATE TRIGGER firm_allocation_guard BEFORE UPDATE OF employee_limit ON platform_tenants
+FOR EACH ROW EXECUTE FUNCTION platform_validate_firm_allocation();
+REVOKE ALL ON FUNCTION platform_validate_firm_allocation() FROM PUBLIC;
 GRANT SELECT ON platform_tenants,platform_company_limits TO hrms_auth;
 CREATE TABLE IF NOT EXISTS branches (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, company_id uuid NOT NULL, name text NOT NULL, timezone text NOT NULL DEFAULT 'Asia/Kolkata', UNIQUE(tenant_id,company_id,id), FOREIGN KEY(tenant_id,company_id) REFERENCES companies(tenant_id,id));
 CREATE TABLE IF NOT EXISTS employees (

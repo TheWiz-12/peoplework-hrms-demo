@@ -53,7 +53,7 @@ export const articles = [
     title: "Provision a firm or company",
     tags: "platform owner provision new firm company admin capacity limit subscription revoke suspend",
     steps:
-      "The AS Communications platform owner signs in to the separate control plane. Use New firm to create a firm and its first firm admin, New company to add a company, or New administrator to assign a scoped role. Set employee limits per firm and company. Suspend access only after confirming the target; sessions are revoked. Ordinary firm admins cannot see this control plane.",
+      "The AS Communications platform owner signs in to the separate control plane. Use New firm to create a firm and its first firm admin, New company to add a company, or New administrator to assign a scoped role. Each company employee limit reserves capacity from its firm: the sum of company limits cannot exceed the firm limit. The New company form shows remaining slots. Increase the firm limit or lower another company limit if none remain. Suspending a company does not release its reserved slots; lower its limit to release capacity. Ordinary firm admins cannot see this control plane.",
   },
   {
     id: "gate-pass",

@@ -72,6 +72,7 @@ export async function seed(db: Database) {
         name,
         code,
       ]);
+    await q.query("UPDATE platform_company_limits SET employee_limit=1000 WHERE company_id=ANY($1::uuid[])", [[ids.a,ids.b,ids.c]]);
     for (const [id, t, c, name] of [
       [ids.a1, ids.tenant, ids.a, "Indore · Head office"],
       [ids.a2, ids.tenant, ids.a, "Mumbai · Operations"],
@@ -355,7 +356,6 @@ export async function seed(db: Database) {
       randomUUID(),
     ]);
     await q.query("INSERT INTO platform_tenants(tenant_id) SELECT id FROM tenants ON CONFLICT DO NOTHING");
-    await q.query("INSERT INTO platform_company_limits(company_id) SELECT id FROM companies ON CONFLICT DO NOTHING");
     await ensurePlatformOwner(q, demoPassword);
   });
 }

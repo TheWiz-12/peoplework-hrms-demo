@@ -959,6 +959,7 @@ export default function App() {
       },
       organization: {
         title: "Add company",
+        description: "A new company starts with one reserved employee slot. The AS Communications platform owner can increase its limit from available firm capacity.",
         fields: [
           { key: "name", label: "Company name" },
           { key: "code", label: "Company code" },
