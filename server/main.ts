@@ -4,9 +4,12 @@ const { app, db } = await createApp().catch((e) => {
   process.exit(1);
 });
 const port = Number(process.env.PORT || 3001);
+const host =
+  process.env.HOST ||
+  (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1");
 await app.listen(
   port,
-  process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1",
+  host,
 );
 console.log(`Peoplework API ready on port ${port}`);
 for (const signal of ["SIGTERM", "SIGINT"])

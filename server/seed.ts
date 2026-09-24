@@ -23,6 +23,12 @@ export const ids = {
 };
 export const employeeId = (i: number) =>
   `50000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+function demoDeviceSecret() {
+  const secret = process.env.DEMO_DEVICE_SECRET;
+  if (secret && secret.length < 32)
+    throw new Error("DEMO_DEVICE_SECRET must be at least 32 characters");
+  return secret;
+}
 async function ensurePlatformOwner(q: Q, demoPassword: string) {
   const ownerPassword = process.env.PLATFORM_OWNER_PASSWORD;
   if (!ownerPassword) return;
@@ -49,6 +55,12 @@ export async function seed(db: Database) {
     throw new Error("DEMO_PASSWORD is required when DEMO_MODE is enabled");
   await db.owner(async (q) => {
     if ((await q.query("SELECT id FROM tenants LIMIT 1")).rows.length) {
+      const secret = demoDeviceSecret();
+      if (secret)
+        await q.query("UPDATE auth.devices SET secret=$1 WHERE id=$2", [
+          secret,
+          ids.device,
+        ]);
       await ensurePlatformOwner(q, demoPassword);
       return;
     }
@@ -351,9 +363,9 @@ export async function seed(db: Database) {
       ids.a,
       ids.a1,
       "Indore entrance",
-      // Deliberately regenerated every demo start; public source must never
-      // contain a biometric credential, even for a fictional environment.
-      randomUUID(),
+      // A private environment variable enables repeatable simulator tests.
+      // Otherwise generate a credential; never commit one to public source.
+      demoDeviceSecret() || randomUUID(),
     ]);
     await q.query("INSERT INTO platform_tenants(tenant_id) SELECT id FROM tenants ON CONFLICT DO NOTHING");
     await ensurePlatformOwner(q, demoPassword);

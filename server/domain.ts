@@ -19,6 +19,7 @@ export const modules = [
 ] as const;
 export type ModuleName = (typeof modules)[number];
 export const roles: Record<string, string[]> = {
+  platform_owner: ["*"],
   firm_admin: ["*"],
   company_admin: modules
     .filter((x) => x !== "access")

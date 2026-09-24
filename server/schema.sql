@@ -209,6 +209,7 @@ CREATE OR REPLACE FUNCTION auth.ingest_event(d uuid,code text,at_time timestampt
 DECLARE device auth.devices%ROWTYPE; emp public.employees%ROWTYPE; n integer;
 BEGIN
  SELECT * INTO STRICT device FROM auth.devices WHERE id=d AND active;
+ PERFORM set_config('app.device_id', d::text, true);
  SELECT * INTO STRICT emp FROM public.employees WHERE tenant_id=device.tenant_id AND company_id=device.company_id AND branch_id=device.branch_id AND employees.code=ingest_event.code AND status='active';
  INSERT INTO auth.device_nonces(device_id,nonce) VALUES(d,nonce_value);
  INSERT INTO public.attendance(id,tenant_id,company_id,branch_id,employee_id,occurred_at,direction,source,event_key,device_id)
@@ -235,6 +236,16 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public,auth TO hrms_internal;
 GRANT SELECT ON auth.users,auth.grants,auth.devices,public.team_links,public.employees,public.policies,public.platform_tenants,public.platform_company_limits TO hrms_internal;
 GRANT INSERT ON auth.device_nonces,public.attendance TO hrms_internal;
+GRANT SELECT ON public.attendance TO hrms_internal;
+DROP POLICY IF EXISTS internal_device_employee_lookup ON public.employees;
+CREATE POLICY internal_device_employee_lookup ON public.employees FOR SELECT TO hrms_internal
+ USING (EXISTS (SELECT 1 FROM auth.devices d WHERE d.id=nullif(current_setting('app.device_id',true),'')::uuid AND d.active AND d.tenant_id=employees.tenant_id AND d.company_id=employees.company_id AND d.branch_id=employees.branch_id));
+DROP POLICY IF EXISTS internal_device_attendance_insert ON public.attendance;
+CREATE POLICY internal_device_attendance_insert ON public.attendance FOR INSERT TO hrms_internal
+ WITH CHECK (source='device' AND device_id=nullif(current_setting('app.device_id',true),'')::uuid AND EXISTS (SELECT 1 FROM auth.devices d WHERE d.id=attendance.device_id AND d.active AND d.tenant_id=attendance.tenant_id AND d.company_id=attendance.company_id AND d.branch_id=attendance.branch_id));
+DROP POLICY IF EXISTS internal_device_attendance_lookup ON public.attendance;
+CREATE POLICY internal_device_attendance_lookup ON public.attendance FOR SELECT TO hrms_internal
+ USING (device_id=nullif(current_setting('app.device_id',true),'')::uuid AND EXISTS (SELECT 1 FROM auth.devices d WHERE d.id=attendance.device_id AND d.active AND d.tenant_id=attendance.tenant_id AND d.company_id=attendance.company_id AND d.branch_id=attendance.branch_id));
 GRANT EXECUTE ON FUNCTION auth.can_access(uuid,uuid,uuid,uuid,text) TO hrms_internal;
 GRANT CREATE ON SCHEMA auth TO hrms_internal;
 ALTER FUNCTION auth.can_access(uuid,uuid,uuid,uuid,text) OWNER TO hrms_internal;

@@ -45,6 +45,19 @@ export function parseEmployeeCsv(source:string) {
     return o;
   });
 }
+function downloadSampleCsv() {
+  const csv = [
+    "code,name,email,department,designation,employmentType,joinedOn",
+    "DEMO901,Sample Employee One,sample.one@example.test,Operations,Associate,Permanent,2026-01-01",
+    "DEMO902,Sample Employee Two,sample.two@example.test,Operations,Technician,Contract,2026-01-01",
+  ].join("\r\n") + "\r\n";
+  const url = URL.createObjectURL(new Blob([csv], {type:"text/csv;charset=utf-8"}));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "peoplework-employee-import-sample.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
 export default function EmployeeImport({api,companies,branches,onClose,onImported}:{api:Api;companies:Company[];branches:Branch[];onClose:()=>void;onImported:()=>void}) {
   const [company,setCompany]=useState(companies[0]?.id||"");
   const [branch,setBranch]=useState("");
@@ -55,7 +68,8 @@ export default function EmployeeImport({api,companies,branches,onClose,onImporte
   const available=branches.filter(b=>b.company_id===company);
   return <div className="modal-backdrop"><div className="modal import-modal" role="dialog" aria-modal="true"><div className="modal-top"><span className="eyebrow">PEOPLEWORK · DATA IMPORT</span><button className="icon-button" aria-label="Close" onClick={onClose}><X/></button></div><h2>Import employees</h2><p>Review every row before saving. The server validates your company access, duplicate codes, and employee limits again.</p>
     <div className="form-grid"><label>Company<select value={company} onChange={e=>{setCompany(e.target.value);setBranch("")}}>{companies.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label><label>Branch<select required value={branch} onChange={e=>setBranch(e.target.value)}><option value="">Choose branch</option>{available.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></label><label>Original source<select value={source} onChange={e=>setSource(e.target.value)}><option value="csv">CSV</option><option value="sqlserver">SQL Server export</option><option value="access">MS Access export</option><option value="other">Other database export</option></select></label><label className="full">CSV file<input type="file" accept=".csv,text/csv" onChange={async e=>{setError("");setRows([]);try{const file=e.target.files?.[0];if(!file)return;if(file.size>1024*1024)throw new Error("Maximum file size is 1 MB");const bytes=new Uint8Array(await file.arrayBuffer());const format=detectEmployeeFileFormat(bytes);if(format==="numbers")throw new Error("This is an Apple Numbers workbook, even though its name ends in .csv. Open it in Numbers and export it as CSV, then upload the exported file.");if(format==="excel")throw new Error("This is an Excel workbook, even though its name ends in .csv. Export or save it as CSV, then upload the exported file.");if(format==="archive")throw new Error("This file is an archive, not a CSV. Export the employee table as CSV and upload that file.");setRows(parseEmployeeCsv(new TextDecoder("utf-8").decode(bytes)))}catch(err:any){setError(err.message)}}}/></label></div>
-    <p className="import-note">Required columns: code, name, email, department, designation, employmentType, joinedOn (YYYY-MM-DD). Renaming a Numbers or Excel workbook to .csv does not convert it; export it as CSV first. SQL Server, Access and other databases can export these columns to CSV; direct database access is not enabled on this public demo.</p>
+    <p className="import-note">Required columns: code, name, email, department, designation, employmentType, joinedOn (YYYY-MM-DD). Renaming a Numbers or Excel workbook to .csv does not convert it; export it as CSV first. SQL Server, Access and other databases can export these columns to CSV using the read-only bridge; this public demo does not ask for database passwords.</p>
+    <button type="button" className="button secondary" onClick={downloadSampleCsv}>Download sample CSV</button>
     {rows.length>0&&<div className="import-preview"><strong>{rows.length} employees ready to import</strong><div className="platform-table-wrap"><table className="platform-table"><thead><tr><th>Code</th><th>Name</th><th>Email</th><th>Type</th><th>Joining</th></tr></thead><tbody>{rows.slice(0,10).map((r,i)=><tr key={i}><td>{r.code}</td><td>{r.name}</td><td>{r.email}</td><td>{r.employmentType}</td><td>{r.joinedOn}</td></tr>)}</tbody></table></div>{rows.length>10&&<small>Showing the first 10 rows</small>}</div>}
     {error&&<div className="error" role="alert">{error}</div>}<div className="modal-footer"><button className="button secondary" onClick={onClose}>Cancel</button><button className="button primary" disabled={!rows.length||!branch||busy} onClick={async()=>{setBusy(true);setError("");try{await api("/employees/import","POST",{companyId:company,branchId:branch,source,rows});onImported();onClose()}catch(e:any){setError(e.message)}finally{setBusy(false)}}}><UploadCloud size={16}/>{busy?"Importing…":`Import ${rows.length||""} employees`}</button></div>
   </div></div>;
