@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import PlatformWorkspace from "./PlatformWorkspace";
 import EmployeeImport from "./EmployeeImport";
+import AttendanceDetails from "./AttendanceDetails";
 import PasswordInput from "./PasswordInput";
 import {
   LayoutDashboard,
@@ -587,6 +588,7 @@ export default function App() {
     [refresh, setRefresh] = useState(0),
     [modal, setModal] = useState<any>(null),
     [selectedEmployee, setSelectedEmployee] = useState<any>(null),
+    [selectedAttendanceEmployee, setSelectedAttendanceEmployee] = useState<any>(null),
     [showImport, setShowImport] = useState(false),
     [help, setHelp] = useState(false),
     [mobileNav, setMobileNav] = useState(false),
@@ -615,6 +617,9 @@ export default function App() {
     setQuestion("");
     setChatBusy(false);
     setHelp(false);
+    setSelectedEmployee(null);
+    setSelectedAttendanceEmployee(null);
+    setShowImport(false);
   }, [session?.user?.id]);
   const can = (m: string, action = "read") =>
     session?.grants.some(
@@ -1960,7 +1965,7 @@ export default function App() {
                                 <div className="person">
                                   <Avatar name={a.name} />
                                   <div>
-                                    <strong>{a.name}</strong>
+                                    <button className="person-name-button" onClick={() => setSelectedAttendanceEmployee({ id: a.employee_id, name: a.name, code: a.code })} aria-label={`View ${a.name}'s daily punch history`}>{a.name}</button>
                                     <small>{a.code}</small>
                                   </div>
                                 </div>
@@ -2438,6 +2443,7 @@ export default function App() {
           <div className="employee-detail-actions"><button className="button secondary" onClick={()=>editEmployee(selectedEmployee)}>Edit details</button><button className="button secondary" onClick={()=>{const e=selectedEmployee;setSelectedEmployee(null);openEmployeeLogin(e)}}>Login &amp; password</button><button className="button secondary danger" onClick={()=>changeEmployeeStatus(selectedEmployee)}>{selectedEmployee.status==="active"?"Remove from active people":"Restore employee"}</button></div>
         </section>
       </div>}
+      {selectedAttendanceEmployee && <AttendanceDetails employee={selectedAttendanceEmployee} api={api} onClose={() => setSelectedAttendanceEmployee(null)} />}
       {showImport && <EmployeeImport api={api} companies={org.companies.filter((c:any)=>(!company||company===c.id)&&session.grants.some((g:any)=>(g.permissions.includes("*")||g.permissions.includes("employees.write"))&&(!g.company_id||g.company_id===c.id)))} branches={org.branches} onClose={()=>setShowImport(false)} onImported={()=>{setToast("Employees imported successfully");setRefresh(r=>r+1)}}/>}
       <button
         className="help-launcher"

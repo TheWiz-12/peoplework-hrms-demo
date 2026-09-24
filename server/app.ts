@@ -34,6 +34,7 @@ import {
 } from "./security";
 import { seed } from "./seed";
 import { answerHelp, articles } from "./support";
+import { summarizeAttendanceDay } from "./attendance-day";
 
 type Actor = {
   id: string;
@@ -809,6 +810,42 @@ export async function createApp(
             return { ok: true };
           }),
         );
+      }
+      const attendanceEmployeeMatch = path.match(/^\/attendance\/employees\/([^/]+)$/);
+      if (attendanceEmployeeMatch && method === "GET") {
+        const employeeId = parseId(attendanceEmployeeMatch[1]);
+        must(a, "attendance.read");
+        const requestedDate =
+          req.query.date === undefined ? null : date.parse(String(req.query.date));
+        const result = await scope(a, async (q) => {
+          const employee = object((await q.query(
+            "SELECT e.id,e.code,e.name,e.company_id,e.branch_id,b.name AS branch_name,b.timezone FROM employees e JOIN branches b ON b.id=e.branch_id AND b.tenant_id=e.tenant_id AND b.company_id=e.company_id WHERE e.id=$1",
+            [employeeId],
+          )).rows);
+          must(a, "attendance.read", employee.company_id, employee.branch_id);
+          const day = requestedDate || (await q.query(
+            "SELECT to_char(now() AT TIME ZONE $1,'YYYY-MM-DD') AS day",
+            [employee.timezone],
+          )).rows[0].day;
+          const rows = (await q.query(
+            "SELECT id,occurred_at,direction,source,device_id,note FROM attendance WHERE employee_id=$1 AND (occurred_at AT TIME ZONE $2)::date=$3::date ORDER BY occurred_at,id LIMIT 501",
+            [employeeId, employee.timezone, day],
+          )).rows;
+          if (rows.length > 500)
+            bad(422, "More than 500 punches exist for this day; contact support for a full audit export");
+          return {
+            employee: {
+              id: employee.id,
+              code: employee.code,
+              name: employee.name,
+              branchName: employee.branch_name,
+              timezone: employee.timezone,
+            },
+            date: day,
+            ...summarizeAttendanceDay(rows),
+          };
+        });
+        return res.json(result);
       }
       if (path === "/attendance" && method === "GET") {
         must(a, "attendance.read");
