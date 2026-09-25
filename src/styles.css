@@ -1570,7 +1570,8 @@ tbody tr:hover {
   background: #78916b;
 }
 .login-maker {
-  display: inline-flex;
+  display: flex;
+  width: fit-content;
   align-items: baseline;
   gap: 12px;
   margin-top: 15px;
@@ -1584,6 +1585,7 @@ tbody tr:hover {
 .login-maker strong { font-family: Manrope, sans-serif; font-size: clamp(20px, 2vw, 28px); line-height: 1.1; letter-spacing: -.04em; }
 .login-maker i { width: 8px; height: 8px; border-radius: 50%; background: #eab685; }
 .login-story .eyebrow {
+  display: block;
   margin-top: 80px;
   color: #a3b898;
   font-size: 9px;
