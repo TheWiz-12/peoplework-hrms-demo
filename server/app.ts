@@ -1660,6 +1660,9 @@ export async function createApp(
     logger: false,
     bodyParser: false,
   });
+  // OCI's named tunnel connects over 127.0.0.1. Trust forwarding headers
+  // only from that local connector, never from arbitrary Internet clients.
+  app.getHttpAdapter().getInstance().set("trust proxy", "loopback");
   app.use(
     helmet({
       contentSecurityPolicy: {
