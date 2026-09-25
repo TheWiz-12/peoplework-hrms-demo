@@ -111,6 +111,7 @@ export async function migrate(db: Database) {
       tenants: { c: "NULL", b: "NULL", e: "NULL", m: "'organization'" },
       companies: { c: "id", b: "NULL", e: "NULL", m: "'organization'" },
       branches: { c: "company_id", b: "id", e: "NULL", m: "'organization'" },
+      shifts: { c: "company_id", b: "branch_id", e: "NULL", m: "'policies'" },
       employees: { c: "company_id", b: "branch_id", e: "id", m: "'employees'" },
       policies: { c: "company_id", b: "branch_id", e: "NULL", m: "'policies'" },
       attendance: {

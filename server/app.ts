@@ -6,7 +6,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import { randomUUID, createHmac } from "node:crypto";
+import { randomUUID, randomBytes, createHmac } from "node:crypto";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { Database, Q } from "./db";
@@ -34,7 +34,7 @@ import {
 } from "./security";
 import { seed } from "./seed";
 import { answerHelp, articles } from "./support";
-import { summarizeAttendanceDay } from "./attendance-day";
+import { summarizeAttendanceDay, classifyAttendance } from "./attendance-day";
 
 type Actor = {
   id: string;
@@ -195,7 +195,8 @@ export async function createApp(
         return res.json({ csrf: result.csrf });
       }
       if (path === "/biometric/events" && method === "POST") {
-        const deviceId = uuid.parse(req.headers["x-device-id"]);
+        const readerKey = String(req.headers["x-device-id"] || "");
+        if (!/^[A-Za-z0-9._:-]{2,100}$/.test(readerKey)) bad(401,"Invalid device envelope");
         const stamp = String(req.headers["x-timestamp"] || "");
         const nonce = String(req.headers["x-nonce"] || "");
         const signature = String(req.headers["x-signature"] || "");
@@ -211,12 +212,13 @@ export async function createApp(
           async (q) =>
             (
               await q.query(
-                "SELECT * FROM auth.devices WHERE id=$1 AND active",
-                [deviceId],
+                "SELECT * FROM auth.devices WHERE (id::text=$1 OR machine_id=$1) AND active",
+                [readerKey],
               )
             ).rows[0],
         );
         if (!device) bad(401, "Invalid device envelope");
+        const deviceId=device.id;
         const expected = createHmac("sha256", device.secret)
           .update(`${stamp}.${nonce}.` + ((req as any).rawBody || ""))
           .digest("hex");
@@ -226,7 +228,9 @@ export async function createApp(
             employeeCode: z.string().min(1).max(30),
             occurredAt: z.string().datetime({ offset: true }),
             eventId: z.string().min(1).max(100),
-            direction: z.enum(["in", "out", "unknown"]).default("unknown"),
+            // Some readers send a direction, but it is never trusted. The
+            // registered machine role or alternating punch order decides it.
+            direction: z.enum(["in", "out", "unknown"]).optional(),
           })
           .strict()
           .parse(req.body);
@@ -237,7 +241,7 @@ export async function createApp(
             e.employeeCode,
             e.occurredAt,
             e.eventId,
-            e.direction,
+            "unknown",
             nonce,
           ]),
         );
@@ -303,7 +307,7 @@ export async function createApp(
               [a.tenant_id],
             )).rows;
             const companies = (await q.query(
-              "SELECT c.id,c.tenant_id,c.name,c.code,coalesce(pcl.status,'active') AS status,coalesce(pcl.employee_limit,1000) AS employee_limit,(SELECT count(*)::int FROM employees e WHERE e.company_id=c.id AND e.status='active') AS employee_count,(SELECT count(*)::int FROM branches b WHERE b.company_id=c.id) AS branch_count FROM companies c LEFT JOIN platform_company_limits pcl ON pcl.company_id=c.id WHERE c.tenant_id<>$1 ORDER BY c.name",
+              "SELECT c.id,c.tenant_id,c.name,c.code,c.machine_mode,c.entry_machine_id,c.exit_machine_id,coalesce(pcl.status,'active') AS status,coalesce(pcl.employee_limit,1000) AS employee_limit,(SELECT count(*)::int FROM employees e WHERE e.company_id=c.id AND e.status='active') AS employee_count,(SELECT count(*)::int FROM branches b WHERE b.company_id=c.id) AS branch_count FROM companies c LEFT JOIN platform_company_limits pcl ON pcl.company_id=c.id WHERE c.tenant_id<>$1 ORDER BY c.name",
               [a.tenant_id],
             )).rows;
             return { tenants, companies, totals: { tenants: tenants.length, companies: companies.length, employees: tenants.reduce((n: number, t: any) => n + Number(t.employee_count), 0) } };
@@ -347,7 +351,10 @@ export async function createApp(
         }
         if (path === "/platform/companies" && method === "POST") {
           const administrator=z.object({name:z.string().trim().min(2).max(120),email:z.string().email().max(160),password:z.string().min(14).max(200)}).strict();
-          const x=z.object({tenantId:uuid,name:z.string().trim().min(2).max(120),code:z.string().regex(/^[A-Z0-9_-]{2,12}$/),employeeLimit:z.number().int().min(1).max(100000),companyAdmin:administrator.optional(),hrAdmin:administrator.optional()}).strict().parse(req.body);
+          const machineId=z.string().trim().min(2).max(100).regex(/^[A-Za-z0-9._:-]+$/);
+          const x=z.object({tenantId:uuid,name:z.string().trim().min(2).max(120),code:z.string().regex(/^[A-Z0-9_-]{2,12}$/),employeeLimit:z.number().int().min(1).max(100000),machineMode:z.union([z.literal(1),z.literal(2)]),entryMachineId:machineId.optional(),exitMachineId:machineId.optional(),companyAdmin:administrator.optional(),hrAdmin:administrator.optional()}).strict().parse(req.body);
+          if(x.machineMode===1 && x.exitMachineId) bad(400,"A single-reader company cannot have an exit reader ID");
+          if(x.entryMachineId && x.entryMachineId===x.exitMachineId) bad(400,"Entry and exit reader IDs must differ");
           if(x.companyAdmin && x.hrAdmin && x.companyAdmin.email.toLowerCase()===x.hrAdmin.email.toLowerCase()) bad(400,"Company and HR administrators need different email addresses");
           return res.status(201).json(await db.owner(async(q)=>{
             const tenant=object((await q.query("SELECT pt.*,t.name FROM platform_tenants pt JOIN tenants t ON t.id=pt.tenant_id WHERE pt.tenant_id=$1 AND pt.tenant_id<>$2 FOR UPDATE",[x.tenantId,a.tenant_id])).rows);
@@ -356,7 +363,7 @@ export async function createApp(
             const remaining=tenant.employee_limit-allocated;
             if(x.employeeLimit>remaining) bad(409,`Only ${Math.max(0,remaining)} employee slots remain in ${tenant.name}; increase the firm limit or reduce another company limit`);
             const id=randomUUID();
-            await q.query("INSERT INTO companies(id,tenant_id,name,code) VALUES($1,$2,$3,$4)",[id,x.tenantId,x.name,x.code]);
+            await q.query("INSERT INTO companies(id,tenant_id,name,code,machine_mode,entry_machine_id,exit_machine_id) VALUES($1,$2,$3,$4,$5,$6,$7)",[id,x.tenantId,x.name,x.code,x.machineMode,x.entryMachineId||null,x.exitMachineId||null]);
             await q.query("UPDATE platform_company_limits SET employee_limit=$2 WHERE company_id=$1",[id,x.employeeLimit]);
             for(const [role,admin] of [["company_admin",x.companyAdmin],["hr",x.hrAdmin]] as const) {
               if(!admin) continue;
@@ -411,11 +418,23 @@ export async function createApp(
         const companyMatch=path.match(/^\/platform\/companies\/([^/]+)$/);
         if(companyMatch && method==="PATCH") {
           const id=parseId(companyMatch[1]);
-          const x=z.object({status:z.enum(["active","suspended"]).optional(),employeeLimit:z.number().int().min(1).max(100000).optional()}).strict().refine(v=>v.status!==undefined || v.employeeLimit!==undefined).parse(req.body);
+          const machineId=z.string().trim().min(2).max(100).regex(/^[A-Za-z0-9._:-]+$/);
+          const x=z.object({status:z.enum(["active","suspended"]).optional(),employeeLimit:z.number().int().min(1).max(100000).optional(),machineMode:z.union([z.literal(1),z.literal(2)]).optional(),entryMachineId:machineId.nullable().optional(),exitMachineId:machineId.nullable().optional()}).strict().refine(v=>Object.keys(v).length>0).parse(req.body);
           return res.json(await db.owner(async(q)=>{
             const company=object((await q.query("SELECT c.tenant_id,c.name FROM companies c WHERE c.id=$1 AND c.tenant_id<>$2",[id,a.tenant_id])).rows);
             const firm=object((await q.query("SELECT employee_limit FROM platform_tenants WHERE tenant_id=$1 FOR UPDATE",[company.tenant_id])).rows);
             const current=object((await q.query("SELECT * FROM platform_company_limits WHERE company_id=$1 FOR UPDATE",[id])).rows);
+            if(x.machineMode!==undefined||x.entryMachineId!==undefined||x.exitMachineId!==undefined){
+              const configured=object((await q.query("SELECT machine_mode,entry_machine_id,exit_machine_id FROM companies WHERE id=$1 FOR UPDATE",[id])).rows);
+              const mode=x.machineMode??configured.machine_mode;
+              const entry=x.entryMachineId===undefined?configured.entry_machine_id:x.entryMachineId;
+              const exit=x.exitMachineId===undefined?configured.exit_machine_id:x.exitMachineId;
+              if(mode===1&&exit) bad(400,"Single-reader companies cannot have an exit reader ID");
+              if(entry&&entry===exit) bad(400,"Entry and exit reader IDs must differ");
+              const activeReaders=(await q.query("SELECT count(*)::int AS total FROM auth.devices WHERE company_id=$1 AND active",[id])).rows[0].total;
+              if(mode!==configured.machine_mode&&activeReaders>0) bad(409,"Deactivate and reconfigure branch readers before changing one/two-reader mode");
+              await q.query("UPDATE companies SET machine_mode=$1,entry_machine_id=$2,exit_machine_id=$3 WHERE id=$4",[mode,entry||null,exit||null,id]);
+            }
             if(x.employeeLimit!==undefined) {
               const used=(await q.query("SELECT count(*)::int AS total FROM employees WHERE company_id=$1 AND status='active'",[id])).rows[0].total;
               if(x.employeeLimit<used) bad(409,`${company.name} already has ${used} employees; its limit cannot be lower`);
@@ -461,8 +480,61 @@ export async function createApp(
               .rows,
             branches: (await q.query("SELECT * FROM branches ORDER BY name"))
               .rows,
+            shifts: (await q.query("SELECT * FROM shifts ORDER BY code")).rows,
           })),
         );
+      if (path === "/devices" && method === "GET") {
+        must(a,"organization.read");
+        const rows=await db.as("hrms_auth",a.id,async(q)=>(await q.query(
+          "SELECT d.id,d.tenant_id,d.company_id,d.branch_id,d.name,d.machine_id,d.punch_role,d.active FROM auth.devices d WHERE d.tenant_id=$1 ORDER BY d.name",
+          [a.tenant_id])).rows);
+        return res.json(rows.filter((d:any)=>permission(a,"organization.read",d.company_id,d.branch_id)));
+      }
+      if (path === "/devices" && method === "POST") {
+        const x=z.object({companyId:uuid,branchId:uuid,machineId:z.string().trim().min(2).max(100).regex(/^[A-Za-z0-9._:-]+$/),name:z.string().trim().min(2).max(120),punchRole:z.enum(["alternate","in","out"])}).strict().parse(req.body);
+        if(uuid.safeParse(x.machineId).success) bad(400,"Use a non-UUID reader identifier so it cannot overlap an API credential ID");
+        must(a,"organization.write",x.companyId,x.branchId);
+        if(!a.grants.some(g=>["firm_admin","company_admin","hr"].includes(g.role)&&(!g.company_id||g.company_id===x.companyId)&&(!g.branch_id||g.branch_id===x.branchId))) bad(403,"Administrator required for this branch");
+        const result=await db.owner(async(q)=>{
+          const branch=object((await q.query("SELECT b.id,c.machine_mode FROM branches b JOIN companies c ON c.id=b.company_id AND c.tenant_id=b.tenant_id WHERE b.id=$1 AND b.company_id=$2 AND b.tenant_id=$3 FOR UPDATE",[x.branchId,x.companyId,a.tenant_id])).rows);
+          if((branch.machine_mode===1)!==(x.punchRole==="alternate")) bad(400,"Reader role does not match this company's one/two-reader setting");
+          const conflict=(await q.query("SELECT id,tenant_id,company_id,branch_id,punch_role FROM auth.devices WHERE machine_id=$1 AND active",[x.machineId])).rows[0];
+          if(conflict&&(conflict.tenant_id!==a.tenant_id||conflict.company_id!==x.companyId||conflict.branch_id!==x.branchId||conflict.punch_role!==x.punchRole)) bad(409,"This machine ID is already assigned");
+          await q.query("UPDATE auth.devices SET active=false WHERE tenant_id=$1 AND company_id=$2 AND branch_id=$3 AND punch_role=$4 AND active",[a.tenant_id,x.companyId,x.branchId,x.punchRole]);
+          const id=randomUUID(), secret=randomBytes(32).toString("hex");
+          await q.query("INSERT INTO auth.devices(id,tenant_id,company_id,branch_id,name,secret,active,machine_id,punch_role) VALUES($1,$2,$3,$4,$5,$6,true,$7,$8)",[id,a.tenant_id,x.companyId,x.branchId,x.name,secret,x.machineId,x.punchRole]);
+          await audit(q,a,"device.configured",id,x.companyId,x.branchId);
+          return {id,machineId:x.machineId,punchRole:x.punchRole,secret};
+        });
+        return res.status(201).json(result);
+      }
+      if (path === "/shifts" && method === "GET") {
+        must(a,"policies.read");
+        return res.json(await scope(a,async(q)=>(await q.query("SELECT * FROM shifts WHERE ($1::uuid IS NULL OR company_id=$1) ORDER BY code",[company])).rows));
+      }
+      if (path === "/shifts" && method === "POST") {
+        const hhmm=z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+        const x=z.object({companyId:uuid,branchId:uuid.nullable().optional(),code:z.string().trim().min(2).max(20).regex(/^[A-Za-z0-9_-]+$/),name:z.string().trim().min(2).max(120),kind:z.enum(["day","night"]),startTime:hhmm,endTime:hhmm,shiftHours:z.number().min(0.25).max(24),lunchStart:hhmm.nullable().optional(),lunchEnd:hhmm.nullable().optional(),graceMinutes:z.number().int().min(0).max(120)}).strict().parse(req.body);
+        must(a,"policies.write",x.companyId,x.branchId);
+        const minute=(v:string)=>Number(v.slice(0,2))*60+Number(v.slice(3));
+        const span=(minute(x.endTime)-minute(x.startTime)+1440)%1440 || 1440;
+        if((x.kind==="night") !== (minute(x.endTime)<=minute(x.startTime))) bad(400,"Night shifts must cross midnight; day shifts must end the same day");
+        if(Boolean(x.lunchStart)!==Boolean(x.lunchEnd)) bad(400,"Provide both lunch start and lunch end");
+        let lunchMinutes=0;
+        if(x.lunchStart&&x.lunchEnd){
+          const offset=(v:string)=>(minute(v)-minute(x.startTime)+1440)%1440;
+          if(offset(x.lunchStart)>=offset(x.lunchEnd)||offset(x.lunchEnd)>span) bad(400,"Lunch must fall within the shift");
+          lunchMinutes=offset(x.lunchEnd)-offset(x.lunchStart);
+        }
+        const scheduledMinutes=span-lunchMinutes;
+        if(Math.round(x.shiftHours*60)!==scheduledMinutes) bad(400,"Shift hours must equal start-to-end time minus the lunch break");
+        return res.status(201).json(await scope(a,async(q)=>{
+          const id=randomUUID();
+          await q.query("INSERT INTO shifts(id,tenant_id,company_id,branch_id,code,name,kind,start_time,end_time,shift_minutes,lunch_start,lunch_end,grace_minutes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",[id,a.tenant_id,x.companyId,x.branchId||null,x.code,x.name,x.kind,x.startTime,x.endTime,scheduledMinutes,x.lunchStart||null,x.lunchEnd||null,x.graceMinutes]);
+          await audit(q,a,"shift.created",id,x.companyId,x.branchId||null);
+          return {id};
+        }));
+      }
       if (path === "/companies" && method === "POST") {
         if (!a.grants.some((g) => g.role === "firm_admin" && !g.company_id))
           bad(403, "Firm administrator required");
@@ -470,17 +542,19 @@ export async function createApp(
           .object({
             name: z.string().trim().min(2).max(120),
             code: z.string().regex(/^[A-Z0-9_-]{2,12}$/),
+            machineMode: z.union([z.literal(1),z.literal(2)]),
           })
           .strict()
           .parse(req.body);
         return res.status(201).json(
           await scope(a, async (q) => {
             const id = randomUUID();
-            await q.query("INSERT INTO companies VALUES($1,$2,$3,$4)", [
+            await q.query("INSERT INTO companies(id,tenant_id,name,code,machine_mode) VALUES($1,$2,$3,$4,$5)", [
               id,
               a.tenant_id,
               x.name,
               x.code,
+              x.machineMode,
             ]);
             await audit(q, a, "company.created", id, id);
             return { id };
@@ -749,6 +823,11 @@ export async function createApp(
         return res.status(201).json(
           await scope(a, async (q) => {
             const id = randomUUID();
+            if(x.rules.shiftId){
+              const shift=(await q.query("SELECT id,shift_minutes FROM shifts WHERE id=$1 AND company_id=$2 AND active AND (branch_id IS NULL OR branch_id=$3)",[x.rules.shiftId,x.companyId,x.branchId||null])).rows[0];
+              if(!shift) bad(400,"Selected shift is not available for this policy scope");
+              if(Math.round(x.rules.dailyHours*60)!==shift.shift_minutes) bad(400,"Policy daily hours must match the selected shift's working hours");
+            }
             const v = (
               await q.query(
                 "SELECT coalesce(max(version),0)+1 AS v FROM policies WHERE company_id=$1 AND name=$2",
@@ -819,7 +898,7 @@ export async function createApp(
           req.query.date === undefined ? null : date.parse(String(req.query.date));
         const result = await scope(a, async (q) => {
           const employee = object((await q.query(
-            "SELECT e.id,e.code,e.name,e.company_id,e.branch_id,b.name AS branch_name,b.timezone FROM employees e JOIN branches b ON b.id=e.branch_id AND b.tenant_id=e.tenant_id AND b.company_id=e.company_id WHERE e.id=$1",
+            "SELECT e.id,e.code,e.name,e.employment_type,to_char(e.joined_on,'YYYY-MM-DD') AS joined_on,e.company_id,e.branch_id,b.name AS branch_name,b.timezone FROM employees e JOIN branches b ON b.id=e.branch_id AND b.tenant_id=e.tenant_id AND b.company_id=e.company_id WHERE e.id=$1",
             [employeeId],
           )).rows);
           must(a, "attendance.read", employee.company_id, employee.branch_id);
@@ -827,12 +906,25 @@ export async function createApp(
             "SELECT to_char(now() AT TIME ZONE $1,'YYYY-MM-DD') AS day",
             [employee.timezone],
           )).rows[0].day;
+          const policy=(await q.query("SELECT p.rules,p.name FROM policies p WHERE p.company_id=$1 AND p.employment_type=$2 AND p.status='published' AND p.effective_from<=$3::date AND (p.branch_id IS NULL OR p.branch_id=$4) ORDER BY (p.branch_id IS NOT NULL) DESC,p.effective_from DESC,p.version DESC LIMIT 1",[employee.company_id,employee.employment_type,day,employee.branch_id])).rows[0];
+          const rules=policy?.rules||{};
+          const shift=rules.shiftId?(await q.query("SELECT code,name,kind,start_time,end_time,shift_minutes,lunch_start,lunch_end,grace_minutes FROM shifts WHERE id=$1 AND company_id=$2 AND (branch_id IS NULL OR branch_id=$3) AND active",[rules.shiftId,employee.company_id,employee.branch_id])).rows[0]:null;
+          // The workday window is anchored to the assigned shift, not midnight.
+          // It spans at most 24 hours, so a night shift keeps post-midnight OUTs.
           const rows = (await q.query(
-            "SELECT id,occurred_at,direction,source,device_id,note FROM attendance WHERE employee_id=$1 AND (occurred_at AT TIME ZONE $2)::date=$3::date ORDER BY occurred_at,id LIMIT 501",
-            [employeeId, employee.timezone, day],
+            shift?"SELECT id,occurred_at,direction,source,device_id,note FROM attendance WHERE employee_id=$1 AND occurred_at >= (($3::date + $4::time - interval '4 hours') AT TIME ZONE $2) AND occurred_at < ((($3::date + $4::time - interval '4 hours') + interval '1 day') AT TIME ZONE $2) ORDER BY occurred_at,id LIMIT 501":"SELECT id,occurred_at,direction,source,device_id,note FROM attendance WHERE employee_id=$1 AND (occurred_at AT TIME ZONE $2)::date=$3::date ORDER BY occurred_at,id LIMIT 501",
+            shift?[employeeId, employee.timezone, day,shift.start_time]:[employeeId, employee.timezone, day],
           )).rows;
           if (rows.length > 500)
             bad(422, "More than 500 punches exist for this day; contact support for a full audit export");
+          const leave=(await q.query("SELECT 1 FROM leave_requests WHERE employee_id=$1 AND status='approved' AND start_date<=$2::date AND end_date>=$2::date LIMIT 1",[employeeId,day])).rows.length>0;
+          const summary=summarizeAttendanceDay(rows);
+          const attendanceRule={punchRequired:rules.punchRequired??true,halfDayEnabled:rules.halfDayEnabled??false,shortLeaveEnabled:rules.shortLeaveEnabled??false,presentMinHours:rules.presentMinHours??4,halfDayMaxHours:rules.halfDayMaxHours??5,shortDayMaxHours:rules.shortDayMaxHours??7};
+          const scheduledStart=shift?(await q.query("SELECT (($1::date + $2::time) AT TIME ZONE $3) AS at",[day,shift.start_time,employee.timezone])).rows[0].at:null;
+          const lateMinutes=summary.firstIn&&scheduledStart?Math.max(0,Math.floor((Date.parse(summary.firstIn)-new Date(scheduledStart).getTime())/60000)-Number(shift.grace_minutes)):0;
+          const aboveScheduledMinutes=shift?Math.max(0,summary.workedMinutes-Number(shift.shift_minutes)):0;
+          const localToday=(await q.query("SELECT to_char(now() AT TIME ZONE $1,'YYYY-MM-DD') AS day",[employee.timezone])).rows[0].day;
+          const joinedOn=String(employee.joined_on).slice(0,10);
           return {
             employee: {
               id: employee.id,
@@ -842,7 +934,10 @@ export async function createApp(
               timezone: employee.timezone,
             },
             date: day,
-            ...summarizeAttendanceDay(rows),
+            policyName:policy?.name||null,shift:shift||null,
+            lateMinutes,aboveScheduledMinutes,
+            status:day>localToday||day<joinedOn?"not due":classifyAttendance(summary.workedMinutes,summary.totalPunches,attendanceRule,leave),
+            ...summary,
           };
         });
         return res.json(result);

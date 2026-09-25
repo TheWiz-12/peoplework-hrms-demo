@@ -1569,6 +1569,20 @@ tbody tr:hover {
 .login-story .brand-mark {
   background: #78916b;
 }
+.login-maker {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 15px;
+  padding: 10px 15px;
+  border: 1px solid rgba(217, 235, 205, .3);
+  border-radius: 12px;
+  background: rgba(255,255,255,.08);
+  color: #f2f7e7;
+}
+.login-maker span { font-size: 10px; font-weight: 800; letter-spacing: .17em; color: #b5cbaa; }
+.login-maker strong { font-family: Manrope, sans-serif; font-size: clamp(20px, 2vw, 28px); line-height: 1.1; letter-spacing: -.04em; }
+.login-maker i { width: 8px; height: 8px; border-radius: 50%; background: #eab685; }
 .login-story .eyebrow {
   margin-top: 80px;
   color: #a3b898;
@@ -2171,6 +2185,8 @@ tbody tr:hover {
   .login-story .brand {
     font-size: 24px;
   }
+  .login-maker { margin-top: 10px; padding: 8px 11px; }
+  .login-maker strong { font-size: 19px; }
   .login-form {
     padding: 35px 25px 65px;
   }

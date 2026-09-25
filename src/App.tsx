@@ -335,7 +335,9 @@ function Modal({
                 className={f.type === "textarea" ? "full" : ""}
               >
                 {f.label}
-                {f.type === "multi" ? (
+                {f.type === "checkbox" ? (
+                  <input type="checkbox" checked={Boolean(values[f.key])} onChange={(e)=>setValues({...values,[f.key]:e.target.checked})}/>
+                ) : f.type === "multi" ? (
                   <select
                     multiple
                     aria-label={f.label}
@@ -463,6 +465,7 @@ function Login({ onLogin, notice }: { onLogin: () => void; notice?: string }) {
           </span>
           peoplework<span className="brand-dot">.</span>
         </div>
+        <div className="login-maker"><span>CREATED BY</span><strong>AS Communications</strong><i /></div>
         <span className="eyebrow light">SPACE FOR YOUR PEOPLE TO THRIVE</span>
         <h1>
           Good work starts
@@ -487,7 +490,7 @@ function Login({ onLogin, notice }: { onLogin: () => void; notice?: string }) {
             Connected across companies
           </div>
         </div>
-        <small>PEOPLEWORK · BY AS COMMUNICATIONS</small>
+        <small>PEOPLEWORK · AN AS COMMUNICATIONS PRODUCT</small>
       </section>
       <section className="login-form">
         <div>
@@ -572,7 +575,9 @@ export default function App() {
     [authReady, setAuthReady] = useState(false),
     [page, setPage] = useState("dashboard"),
     [company, setCompany] = useState(""),
-    [org, setOrg] = useState<any>({ companies: [], branches: [] }),
+    [org, setOrg] = useState<any>({ companies: [], branches: [], shifts: [] }),
+    [devices, setDevices] = useState<any[]>([]),
+    [deviceSecret, setDeviceSecret] = useState<any>(null),
     [employees, setEmployees] = useState<any[]>([]),
     [attendance, setAttendance] = useState<any[]>([]),
     [leaves, setLeaves] = useState<any[]>([]),
@@ -637,15 +642,17 @@ export default function App() {
     const query = company ? "?companyId=" + company : "";
     (async () => {
       try {
-        const [o, e, a, l, m] = await Promise.all([
+        const [o, e, a, l, m, d] = await Promise.all([
           api("/organization"),
           can("employees") ? api("/employees" + query) : [],
           can("attendance") ? api("/attendance" + query) : [],
           can("leave") ? api("/leave" + query) : [],
           can("masters") ? api("/records/masters" + query) : [],
+          can("organization") ? api("/devices") : [],
         ]);
         if (!active) return;
         setOrg(o);
+        setDevices(d);
         setEmployees(e);
         setAttendance(a);
         setLeaves(l);
@@ -880,6 +887,7 @@ export default function App() {
           "Save a draft, review it, then publish a version with an effective date.",
         fields: [
           cf,
+          {key:"branchId",label:"Branch (optional)",type:"select",required:false,options:branchOptions},
           { key: "name", label: "Policy name" },
           {
             key: "employmentType",
@@ -958,18 +966,31 @@ export default function App() {
             min: 1,
             max: 4,
           },
+          {key:"punchRequired",label:"Punch required for this group",type:"checkbox",value:true},
+          {key:"halfDayEnabled",label:"Enable half-day marking",type:"checkbox",value:false},
+          {key:"shortLeaveEnabled",label:"Enable short-day marking",type:"checkbox",value:false},
+          {key:"presentMinHours",label:"Minimum hours for attendance",type:"number",value:4,min:0,max:24},
+          {key:"halfDayMaxHours",label:"Half-day upper limit (hours)",type:"number",value:5,min:0,max:24},
+          {key:"shortDayMaxHours",label:"Short-day upper limit (hours)",type:"number",value:7,min:0,max:24},
+          {key:"shiftId",label:"Shift (optional)",type:"select",required:false,options:(org.shifts||[]).map((s:any)=>({value:s.id,label:`${s.code} · ${s.name}`,companyId:s.company_id}))},
         ],
         save: (v: any) => {
           const {
             companyId,
+            branchId,
             name,
             employmentType,
             effectiveFrom,
             payBasis,
+            punchRequired,
+            halfDayEnabled,
+            shortLeaveEnabled,
+            shiftId,
             ...n
           } = v;
           return mutate("/policies", {
             companyId,
+            branchId:branchId||null,
             name,
             employmentType,
             effectiveFrom,
@@ -978,6 +999,10 @@ export default function App() {
                 Object.entries(n).map(([k, v]) => [k, Number(v)]),
               ),
               payBasis,
+              punchRequired:Boolean(punchRequired),
+              halfDayEnabled:Boolean(halfDayEnabled),
+              shortLeaveEnabled:Boolean(shortLeaveEnabled),
+              shiftId:shiftId||null,
             },
           });
         },
@@ -1046,13 +1071,24 @@ export default function App() {
         fields: [
           { key: "name", label: "Company name" },
           { key: "code", label: "Company code" },
+          {key:"machineMode",label:"Face reader arrangement",type:"select",options:[{value:"1",label:"One reader — alternate IN/OUT"},{value:"2",label:"Two readers — separate entry/exit"}]},
         ],
-        save: (v: any) => mutate("/companies", v),
+        save: (v: any) => mutate("/companies", {...v,machineMode:Number(v.machineMode)}),
       },
       branch: {
         title: "Add branch",
         fields: [cf, { key: "name", label: "Branch name" }],
         save: (v: any) => mutate("/branches", v),
+      },
+      shift: {
+        title:"Create shift",description:"Night shifts may cross midnight. Shift hours must equal start-to-end time minus the scheduled lunch break; actual work time still sums IN/OUT pairs.",
+        fields:[cf,{key:"branchId",label:"Branch (optional)",type:"select",required:false,options:branchOptions},{key:"code",label:"Shift code"},{key:"name",label:"Shift name"},{key:"kind",label:"Shift type",type:"select",options:[{value:"day",label:"Day"},{value:"night",label:"Night"}]},{key:"startTime",label:"Start time",type:"time"},{key:"endTime",label:"End time",type:"time"},{key:"shiftHours",label:"Shift hours",type:"number",min:0.25,max:24},{key:"lunchStart",label:"Lunch start (optional)",type:"time",required:false},{key:"lunchEnd",label:"Lunch end (optional)",type:"time",required:false},{key:"graceMinutes",label:"Grace period (minutes)",type:"number",value:10,min:0,max:120}],
+        save:(v:any)=>mutate("/shifts",{companyId:v.companyId,branchId:v.branchId||null,code:v.code,name:v.name,kind:v.kind,startTime:v.startTime,endTime:v.endTime,shiftHours:Number(v.shiftHours),lunchStart:v.lunchStart||null,lunchEnd:v.lunchEnd||null,graceMinutes:Number(v.graceMinutes)}),
+      },
+      device: {
+        title:"Bind face reader",description:"Choose its branch and role. The signing key is shown only after saving; provide it privately to the device integrator.",
+        fields:[cf,bf,{key:"machineId",label:"Physical machine ID"},{key:"name",label:"Reader name"},{key:"punchRole",label:"Punch role",type:"select",options:[{value:"alternate",label:"Single reader — alternate"},{value:"in",label:"Entry reader"},{value:"out",label:"Exit reader"}]}],
+        save:async(v:any)=>{const result=await api("/devices","POST",v);setDeviceSecret(result);saved()},
       },
       access: {
         title: "Assign access",
@@ -1750,6 +1786,8 @@ export default function App() {
                       Create user
                     </button>
                   )}
+                  {page === "policies" && can("policies","write") && <button className="button secondary" onClick={()=>openCreate("shift")}>Add shift</button>}
+                  {page === "organization" && can("organization","write") && <button className="button secondary" onClick={()=>openCreate("device")}>Bind face reader</button>}
                   {!["reports", "audit"].includes(page) &&
                     can(page, "write") &&
                     (page !== "organization" ||
@@ -1983,7 +2021,7 @@ export default function App() {
                                     a.direction === "in" ? "green" : "amber"
                                   }
                                 >
-                                  {pretty(a.direction)}
+                                  {a.direction==="unknown"?"Auto · open timeline":pretty(a.direction)}
                                 </Badge>
                               </td>
                               <td>{a.branch_name}</td>
@@ -2004,6 +2042,7 @@ export default function App() {
                       ))}
                     {page === "policies" && (
                       <div className="policy-grid">
+                        {(org.shifts||[]).filter((s:any)=>!company||s.company_id===company).map((s:any)=><article className="policy-card" key={s.id}><span className="eyebrow">{s.kind.toUpperCase()} SHIFT · {s.code}</span><h3>{s.name}</h3><p>{String(s.start_time).slice(0,5)}–{String(s.end_time).slice(0,5)} · {Number(s.shift_minutes)/60} hours</p><div className="policy-footer">Lunch {s.lunch_start?`${String(s.lunch_start).slice(0,5)}–${String(s.lunch_end).slice(0,5)}`:"not set"} · Grace {s.grace_minutes} min</div></article>)}
                         {filtered(rows).map((p) => (
                           <article className="policy-card" key={p.id}>
                             <div className="policy-top">
@@ -2046,6 +2085,7 @@ export default function App() {
                               </div>
                             </div>
                             <div className="policy-footer">
+                              <span>{p.rules.punchRequired===false?"No punch needed":`${p.rules.presentMinHours??4}h minimum · ${p.rules.halfDayEnabled?"half-day on":"half-day off"} · ${p.rules.shortLeaveEnabled?"short-day on":"short-day off"}`}</span>
                               <span>
                                 Version {p.version} · {day(p.effective_from)}
                               </span>
@@ -2155,6 +2195,8 @@ export default function App() {
                               </span>
                               <h3>{c.name}</h3>
                               <Badge>{c.code}</Badge>
+                              <p>{c.machine_mode===2?"Two readers: entry and exit":"One reader: alternating IN/OUT"}</p>
+                              {(c.entry_machine_id||c.exit_machine_id)&&<p>Owner-provided IDs: {c.entry_machine_id||"entry pending"}{c.machine_mode===2?` · Exit: ${c.exit_machine_id||"pending"}`:""}</p>}
                               <div className="branch-list">
                                 {org.branches
                                   .filter((b: any) => b.company_id === c.id)
@@ -2164,6 +2206,7 @@ export default function App() {
                                       <span>
                                         {b.name}
                                         <small>{b.timezone}</small>
+                                        <small>{devices.filter((d:any)=>d.branch_id===b.id&&d.active).map((d:any)=>`${d.punch_role}: ${d.machine_id||d.id}`).join(" · ")||"No face reader bound"}</small>
                                       </span>
                                       {session.grants.some((g: any) =>
                                         (g.role === "firm_admin" || g.role === "company_admin") &&
@@ -2426,6 +2469,7 @@ export default function App() {
           {toast}
         </div>
       )}
+      {deviceSecret && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-label="Reader credentials"><div className="modal-top"><span className="eyebrow">READER CREDENTIALS · SAVE NOW</span><button className="icon-button" onClick={()=>setDeviceSecret(null)} aria-label="Close">×</button></div><h2>Reader bound to branch</h2><p>The signing key is shown only once. Store it securely and do not send it in ordinary chat.</p><div className="employee-detail-grid"><div><small>Machine ID</small><strong>{deviceSecret.machineId}</strong></div><div><small>API device ID</small><strong>{deviceSecret.id}</strong></div><div><small>Punch role</small><strong>{deviceSecret.punchRole}</strong></div></div><label>HMAC signing key<input readOnly value={deviceSecret.secret} onFocus={e=>e.target.select()}/></label><div className="modal-footer"><button className="button primary" onClick={()=>setDeviceSecret(null)}>I saved these details</button></div></section></div>}
       {selectedEmployee && <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setSelectedEmployee(null)}}>
         <section className="modal employee-detail" role="dialog" aria-modal="true" aria-labelledby="employee-detail-title">
           <div className="modal-top"><span className="eyebrow">PEOPLEWORK · EMPLOYEE PROFILE</span><button className="icon-button" aria-label="Close employee details" onClick={()=>setSelectedEmployee(null)}><X size={20}/></button></div>

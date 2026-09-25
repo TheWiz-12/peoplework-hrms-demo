@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { createApp } from "../server/app";
-import { summarizeAttendanceDay } from "../server/attendance-day";
+import { summarizeAttendanceDay, classifyAttendance } from "../server/attendance-day";
 import { employeeId, ids } from "../server/seed";
 
 test("daily attendance summary keeps every punch and pairs completed sessions", () => {
@@ -21,6 +21,22 @@ test("daily attendance summary keeps every punch and pairs completed sessions", 
   assert.equal(result.workedMinutes, 180);
   assert.equal(result.openSession, false);
   assert.deepEqual(result.events.map((event) => event.id), ["1", "2", "3", "4"]);
+});
+
+test("single reader alternates by employee workday and sums multiple sessions", () => {
+  const times=["03:30","07:00","07:30","12:00"];
+  const result=summarizeAttendanceDay(times.map((time,i)=>({id:String(i),occurred_at:`2030-02-03T${time}:00Z`,direction:"unknown" as const,source:"device"})));
+  assert.deepEqual(result.events.map(e=>e.direction),["in","out","in","out"]);
+  assert.equal(result.workedMinutes,480);
+  assert.equal(result.inCount,2);
+  assert.equal(result.outCount,2);
+  const rule={punchRequired:true,halfDayEnabled:true,shortLeaveEnabled:true,presentMinHours:4,halfDayMaxHours:5,shortDayMaxHours:7};
+  assert.equal(classifyAttendance(180,2,rule),"absent");
+  assert.equal(classifyAttendance(270,2,rule),"half-day");
+  assert.equal(classifyAttendance(360,2,rule),"short-day");
+  assert.equal(classifyAttendance(480,4,rule),"present");
+  assert.equal(classifyAttendance(0,0,{...rule,punchRequired:false}),"present");
+  assert.equal(classifyAttendance(480,4,rule,true),"leave");
 });
 
 test("firm, HR and employee see scoped daily punches; cross-company requests fail", async () => {

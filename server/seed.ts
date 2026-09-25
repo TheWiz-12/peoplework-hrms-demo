@@ -78,7 +78,7 @@ export async function seed(db: Database) {
       [ids.b, ids.tenant, "Meridian Manufacturing", "MM"],
       [ids.c, ids.other, "Other Firm Ltd", "OF"],
     ])
-      await q.query("INSERT INTO companies VALUES ($1,$2,$3,$4)", [
+      await q.query("INSERT INTO companies(id,tenant_id,name,code) VALUES ($1,$2,$3,$4)", [
         id,
         t,
         name,
@@ -357,7 +357,7 @@ export async function seed(db: Database) {
             JSON.stringify(data),
           ],
         );
-    await q.query("INSERT INTO auth.devices VALUES ($1,$2,$3,$4,$5,$6,true)", [
+    await q.query("INSERT INTO auth.devices(id,tenant_id,company_id,branch_id,name,secret,active) VALUES ($1,$2,$3,$4,$5,$6,true)", [
       ids.device,
       ids.tenant,
       ids.a,

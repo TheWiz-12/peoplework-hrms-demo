@@ -17,7 +17,7 @@ test("demo biometric reader uses the signed ingestion path", async () => {
     employeeCode: "EMP001",
     occurredAt: new Date().toISOString(),
     eventId,
-    direction: "in",
+    direction: "out",
   });
   async function send(nonce: string, signingSecret = secret) {
     const stamp = String(Date.now());
@@ -39,6 +39,8 @@ test("demo biometric reader uses the signed ingestion path", async () => {
     const first = await send(randomUUID());
     assert.equal(first.status, 202, JSON.stringify(first.body));
     assert.equal(first.body.accepted, true);
+    const stored=await db.owner(q=>q.query("SELECT direction FROM attendance WHERE event_key=$1",[`${ids.device}:${eventId}`]));
+    assert.equal(stored.rows[0].direction,"unknown","Reader-supplied direction must be ignored");
     const duplicate = await send(randomUUID());
     assert.equal(duplicate.status, 202, JSON.stringify(duplicate.body));
     assert.equal(duplicate.body.accepted, false);

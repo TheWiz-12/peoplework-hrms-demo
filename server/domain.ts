@@ -94,8 +94,16 @@ export const policyRules = z
     carryForward: z.number().int().min(0).max(365),
     payBasis: z.enum(["monthly", "daily", "hourly", "piece"]),
     approvalStages: z.number().int().min(1).max(4),
+    punchRequired: z.boolean().default(true),
+    halfDayEnabled: z.boolean().default(false),
+    shortLeaveEnabled: z.boolean().default(false),
+    presentMinHours: z.number().min(0).max(24).default(4),
+    halfDayMaxHours: z.number().min(0).max(24).default(5),
+    shortDayMaxHours: z.number().min(0).max(24).default(7),
+    shiftId: uuid.nullable().default(null),
   })
-  .strict();
+  .strict().refine(r => r.presentMinHours <= r.halfDayMaxHours && r.halfDayMaxHours <= r.shortDayMaxHours && r.shortDayMaxHours <= r.dailyHours,
+    "Attendance thresholds must increase from minimum to half-day to short-day to full day");
 export const policySchema = z
   .object({
     companyId: uuid,

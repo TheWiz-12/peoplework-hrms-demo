@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS auth.devices (
  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, company_id uuid NOT NULL, branch_id uuid NOT NULL,
  name text NOT NULL, secret text NOT NULL, active boolean NOT NULL DEFAULT true
 );
+ALTER TABLE auth.devices ADD COLUMN IF NOT EXISTS machine_id text;
+ALTER TABLE auth.devices ADD COLUMN IF NOT EXISTS punch_role text NOT NULL DEFAULT 'alternate';
+DO $$ BEGIN ALTER TABLE auth.devices ADD CONSTRAINT device_punch_role_valid CHECK(punch_role IN ('alternate','in','out')); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DROP INDEX IF EXISTS auth.devices_machine_id_unique;
+CREATE UNIQUE INDEX devices_machine_id_unique ON auth.devices(machine_id) WHERE machine_id IS NOT NULL AND active;
+CREATE UNIQUE INDEX IF NOT EXISTS devices_active_branch_role_unique ON auth.devices(tenant_id,company_id,branch_id,punch_role) WHERE active;
 CREATE TABLE IF NOT EXISTS auth.login_attempts (key text PRIMARY KEY, attempts integer NOT NULL, expires_at timestamptz NOT NULL);
 GRANT USAGE ON SCHEMA auth TO hrms_auth;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA auth TO hrms_auth;
@@ -52,6 +58,9 @@ CREATE TABLE IF NOT EXISTS platform_tenants (
  created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS companies (id uuid PRIMARY KEY, tenant_id uuid NOT NULL REFERENCES tenants(id), name text NOT NULL, code text NOT NULL, UNIQUE(tenant_id,id), UNIQUE(tenant_id,code));
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS machine_mode integer NOT NULL DEFAULT 1 CHECK(machine_mode IN (1,2));
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS entry_machine_id text;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS exit_machine_id text;
 CREATE TABLE IF NOT EXISTS platform_company_limits (
  company_id uuid PRIMARY KEY REFERENCES companies(id),
  status text NOT NULL DEFAULT 'active' CHECK(status IN ('active','suspended')),
@@ -130,6 +139,16 @@ FOR EACH ROW EXECUTE FUNCTION platform_validate_firm_allocation();
 REVOKE ALL ON FUNCTION platform_validate_firm_allocation() FROM PUBLIC;
 GRANT SELECT ON platform_tenants,platform_company_limits TO hrms_auth;
 CREATE TABLE IF NOT EXISTS branches (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, company_id uuid NOT NULL, name text NOT NULL, timezone text NOT NULL DEFAULT 'Asia/Kolkata', UNIQUE(tenant_id,company_id,id), FOREIGN KEY(tenant_id,company_id) REFERENCES companies(tenant_id,id));
+DO $$ BEGIN ALTER TABLE auth.devices ADD CONSTRAINT device_branch_scope FOREIGN KEY(tenant_id,company_id,branch_id) REFERENCES branches(tenant_id,company_id,id); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE TABLE IF NOT EXISTS shifts (
+ id uuid PRIMARY KEY, tenant_id uuid NOT NULL, company_id uuid NOT NULL, branch_id uuid,
+ code text NOT NULL, name text NOT NULL, kind text NOT NULL CHECK(kind IN ('day','night')),
+ start_time time NOT NULL, end_time time NOT NULL, shift_minutes integer NOT NULL CHECK(shift_minutes BETWEEN 1 AND 1440),
+ lunch_start time, lunch_end time, grace_minutes integer NOT NULL DEFAULT 0 CHECK(grace_minutes BETWEEN 0 AND 120),
+ active boolean NOT NULL DEFAULT true, UNIQUE(tenant_id,company_id,code),
+ FOREIGN KEY(tenant_id,company_id) REFERENCES companies(tenant_id,id),
+ FOREIGN KEY(tenant_id,company_id,branch_id) REFERENCES branches(tenant_id,company_id,id)
+);
 CREATE TABLE IF NOT EXISTS employees (
  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, company_id uuid NOT NULL, branch_id uuid NOT NULL,
  code text NOT NULL, name text NOT NULL, email text NOT NULL, department text NOT NULL, designation text NOT NULL,
@@ -213,7 +232,7 @@ BEGIN
  SELECT * INTO STRICT emp FROM public.employees WHERE tenant_id=device.tenant_id AND company_id=device.company_id AND branch_id=device.branch_id AND employees.code=ingest_event.code AND status='active';
  INSERT INTO auth.device_nonces(device_id,nonce) VALUES(d,nonce_value);
  INSERT INTO public.attendance(id,tenant_id,company_id,branch_id,employee_id,occurred_at,direction,source,event_key,device_id)
- VALUES(gen_random_uuid(),device.tenant_id,device.company_id,device.branch_id,emp.id,at_time,dir,'device',d::text||':'||event_id,d) ON CONFLICT(tenant_id,event_key) DO NOTHING;
+ VALUES(gen_random_uuid(),device.tenant_id,device.company_id,device.branch_id,emp.id,at_time,CASE WHEN device.punch_role='alternate' THEN 'unknown' ELSE device.punch_role END,'device',d::text||':'||event_id,d) ON CONFLICT(tenant_id,event_key) DO NOTHING;
  GET DIAGNOSTICS n=ROW_COUNT; RETURN n=1;
 END; $$;
 REVOKE ALL ON FUNCTION auth.ingest_event(uuid,text,timestamptz,text,text,text) FROM PUBLIC;

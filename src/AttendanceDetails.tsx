@@ -74,6 +74,7 @@ export default function AttendanceDetails({
     { label: "Last OUT · logout", value: clock(detail.lastOut, timeZone) },
     { label: "Total punches", value: String(detail.totalPunches), sub: `${detail.inCount} IN · ${detail.outCount} OUT${detail.unknownCount ? ` · ${detail.unknownCount} unknown` : ""}` },
     { label: "Paired work time", value: duration(detail.workedMinutes) },
+    ...(detail.shift?[{label:"Late after grace",value:duration(detail.lateMinutes||0)},{label:"Above scheduled",value:duration(detail.aboveScheduledMinutes||0)}]:[]),
   ] : [];
 
   return (
@@ -93,6 +94,7 @@ export default function AttendanceDetails({
         {error && <div className="error" role="alert">{error}</div>}
         {!loading && detail && !error && <>
           <p className="attendance-detail-location">{detail.employee.branchName} · Times shown in {detail.employee.timezone}</p>
+          <p className="attendance-detail-location">Status: <strong>{detail.status}</strong>{detail.policyName?` · Policy: ${detail.policyName}`:""}{detail.shift?` · Shift: ${detail.shift.code} (${detail.shift.kind})`:""}</p>
           <div className="attendance-summary-grid">
             {summary.map((item) => <div className="attendance-summary-card" key={item.label}><small>{item.label}</small><strong>{item.value}</strong>{item.sub && <span>{item.sub}</span>}</div>)}
           </div>
