@@ -53,5 +53,19 @@ test("reader roles bind to one company and branch; shifts and policy thresholds 
     assert.equal(detail.status,200,JSON.stringify(detail.body));
     assert.equal(detail.body.workedMinutes,480);
     assert.equal(detail.body.status,"present");
+    const noPunchCompany=await firm.post("/api/companies").set("X-CSRF-Token",csrf).send({name:"Office Company",code:"OFFICE",machineMode:1});
+    assert.equal(noPunchCompany.status,201,JSON.stringify(noPunchCompany.body));
+    const officeBranch=await firm.post("/api/branches").set("X-CSRF-Token",csrf).send({companyId:noPunchCompany.body.id,name:"Head Office"});
+    assert.equal(officeBranch.status,201);
+    const director=await firm.post("/api/employees").set("X-CSRF-Token",csrf).send({companyId:noPunchCompany.body.id,branchId:officeBranch.body.id,code:"DIR001",name:"Office Director",email:"director@example.test",department:"Leadership",designation:"Director",employmentType:"Director",joinedOn:"2026-09-01"});
+    assert.equal(director.status,201,JSON.stringify(director.body));
+    const noPunchPolicy=await firm.post("/api/policies").set("X-CSRF-Token",csrf).send({companyId:noPunchCompany.body.id,branchId:officeBranch.body.id,name:"Directors",employmentType:"Director",effectiveFrom:"2026-09-01",rules:{annualLeave:18,sickLeave:6,graceMinutes:10,dailyHours:8,overtimeMultiplier:2,carryForward:5,payBasis:"monthly",approvalStages:1,punchRequired:false}});
+    assert.equal(noPunchPolicy.status,201,JSON.stringify(noPunchPolicy.body));
+    assert.equal((await firm.post(`/api/policies/${noPunchPolicy.body.id}/publish`).set("X-CSRF-Token",csrf).send({})).status,200);
+    const roster=await firm.get(`/api/attendance/daily?companyId=${noPunchCompany.body.id}&date=2026-09-24`);
+    assert.equal(roster.status,200,JSON.stringify(roster.body));
+    assert.equal(roster.body.find((r:any)=>r.employeeId===director.body.id)?.status,"present");
+    assert.equal(roster.body.find((r:any)=>r.employeeId===director.body.id)?.totalPunches,0);
+    assert.equal((await outsider.get("/api/attendance/daily")).status,401);
   }finally{await app.close();await db.close()}
 });

@@ -580,6 +580,7 @@ export default function App() {
     [deviceSecret, setDeviceSecret] = useState<any>(null),
     [employees, setEmployees] = useState<any[]>([]),
     [attendance, setAttendance] = useState<any[]>([]),
+    [dailyAttendance, setDailyAttendance] = useState<any[]>([]),
     [leaves, setLeaves] = useState<any[]>([]),
     [rows, setRows] = useState<any[]>([]),
     [masters, setMasters] = useState<any[]>([]),
@@ -655,6 +656,10 @@ export default function App() {
         setDevices(d);
         setEmployees(e);
         setAttendance(a);
+        if (page === "attendance" && can("attendance")) {
+          const daily = await api("/attendance/daily" + query);
+          if (active) setDailyAttendance(daily);
+        }
         setLeaves(l);
         setMasters(m);
         if (page === "policies" || page === "payroll" || page === "audit") {
@@ -1987,8 +1992,21 @@ export default function App() {
                       ) : (
                         <Empty text="No people match your search." />
                       ))}
-                    {page === "attendance" &&
-                      (filtered(attendance).length ? (
+                    {page === "attendance" && <>
+                      <div className="table-toolbar"><div className="table-title">Daily attendance · {dailyAttendance[0]?.date || today()}</div></div>
+                      {dailyAttendance.length ? cols(
+                        ["EMPLOYEE", "STATUS", "WORKED", "FIRST IN", "LAST OUT", "PUNCHES"],
+                        filtered(dailyAttendance).map((a: any) => <tr key={a.employeeId}>
+                          <td><button className="person-name-button" onClick={() => setSelectedAttendanceEmployee({ id: a.employeeId, name: a.name, code: a.code })}>{a.name}</button><small>{a.code} · {a.branchName}</small></td>
+                          <td><Badge tone={a.status === "present" ? "green" : a.status === "absent" ? "amber" : "outline"}>{pretty(a.status)}</Badge></td>
+                          <td>{Math.floor(a.workedMinutes / 60)}h {a.workedMinutes % 60}m</td>
+                          <td>{a.firstIn ? new Date(a.firstIn).toLocaleTimeString("en-IN", {hour:"2-digit", minute:"2-digit"}) : "—"}</td>
+                          <td>{a.lastOut ? new Date(a.lastOut).toLocaleTimeString("en-IN", {hour:"2-digit", minute:"2-digit"}) : "—"}</td>
+                          <td>{a.totalPunches}</td>
+                        </tr>),
+                      ) : <Empty text="No active employees in this scope." />}
+                      <div className="table-toolbar"><div className="table-title">Recent punch events</div></div>
+                      {filtered(attendance).length ? (
                         cols(
                           [
                             "EMPLOYEE",
@@ -2033,7 +2051,7 @@ export default function App() {
                         )
                       ) : (
                         <Empty text="No attendance events yet." />
-                      ))}
+                      )}</>}
                     {page === "leave" &&
                       (filtered(leaves).length ? (
                         approvalTable(filtered(leaves))

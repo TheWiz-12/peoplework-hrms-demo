@@ -129,6 +129,32 @@ export async function createApp(
   async function scope<T>(a: Actor, fn: (q: Q) => Promise<T>) {
     return db.as("hrms_app", a.id, fn);
   }
+  async function attendanceForEmployee(q: Q, a: Actor, employeeId: string, requestedDate: string | null) {
+    const employee = object((await q.query(
+      "SELECT e.id,e.code,e.name,e.employment_type,to_char(e.joined_on,'YYYY-MM-DD') AS joined_on,e.company_id,e.branch_id,b.name AS branch_name,b.timezone FROM employees e JOIN branches b ON b.id=e.branch_id AND b.tenant_id=e.tenant_id AND b.company_id=e.company_id WHERE e.id=$1",
+      [employeeId],
+    )).rows);
+    must(a, "attendance.read", employee.company_id, employee.branch_id);
+    const day = requestedDate || (await q.query("SELECT to_char(now() AT TIME ZONE $1,'YYYY-MM-DD') AS day", [employee.timezone])).rows[0].day;
+    const policy=(await q.query("SELECT p.rules,p.name FROM policies p WHERE p.company_id=$1 AND p.employment_type=$2 AND p.status='published' AND p.effective_from<=$3::date AND (p.branch_id IS NULL OR p.branch_id=$4) ORDER BY (p.branch_id IS NOT NULL) DESC,p.effective_from DESC,p.version DESC LIMIT 1",[employee.company_id,employee.employment_type,day,employee.branch_id])).rows[0];
+    const rules=policy?.rules||{};
+    const shift=rules.shiftId?(await q.query("SELECT code,name,kind,start_time,end_time,shift_minutes,lunch_start,lunch_end,grace_minutes FROM shifts WHERE id=$1 AND company_id=$2 AND (branch_id IS NULL OR branch_id=$3) AND active",[rules.shiftId,employee.company_id,employee.branch_id])).rows[0]:null;
+    // Anchor night-shift events to the shift's start date rather than midnight.
+    const rows = (await q.query(
+      shift?"SELECT id,occurred_at,direction,source,device_id,note FROM attendance WHERE employee_id=$1 AND occurred_at >= (($3::date + $4::time - interval '4 hours') AT TIME ZONE $2) AND occurred_at < ((($3::date + $4::time - interval '4 hours') + interval '1 day') AT TIME ZONE $2) ORDER BY occurred_at,id LIMIT 501":"SELECT id,occurred_at,direction,source,device_id,note FROM attendance WHERE employee_id=$1 AND (occurred_at AT TIME ZONE $2)::date=$3::date ORDER BY occurred_at,id LIMIT 501",
+      shift?[employeeId, employee.timezone, day,shift.start_time]:[employeeId, employee.timezone, day],
+    )).rows;
+    if (rows.length > 500) bad(422, "More than 500 punches exist for this day; contact support for a full audit export");
+    const leave=(await q.query("SELECT 1 FROM leave_requests WHERE employee_id=$1 AND status='approved' AND start_date<=$2::date AND end_date>=$2::date LIMIT 1",[employeeId,day])).rows.length>0;
+    const summary=summarizeAttendanceDay(rows);
+    const attendanceRule={punchRequired:rules.punchRequired??true,halfDayEnabled:rules.halfDayEnabled??false,shortLeaveEnabled:rules.shortLeaveEnabled??false,presentMinHours:rules.presentMinHours??4,halfDayMaxHours:rules.halfDayMaxHours??5,shortDayMaxHours:rules.shortDayMaxHours??7};
+    const scheduledStart=shift?(await q.query("SELECT (($1::date + $2::time) AT TIME ZONE $3) AS at",[day,shift.start_time,employee.timezone])).rows[0].at:null;
+    const lateMinutes=summary.firstIn&&scheduledStart?Math.max(0,Math.floor((Date.parse(summary.firstIn)-new Date(scheduledStart).getTime())/60000)-Number(shift.grace_minutes)):0;
+    const aboveScheduledMinutes=shift?Math.max(0,summary.workedMinutes-Number(shift.shift_minutes)):0;
+    const localToday=(await q.query("SELECT to_char(now() AT TIME ZONE $1,'YYYY-MM-DD') AS day",[employee.timezone])).rows[0].day;
+    const joinedOn=String(employee.joined_on).slice(0,10);
+    return {employee:{id:employee.id,code:employee.code,name:employee.name,branchName:employee.branch_name,timezone:employee.timezone},date:day,policyName:policy?.name||null,shift:shift||null,lateMinutes,aboveScheduledMinutes,status:day>localToday||day<joinedOn?"not due":classifyAttendance(summary.workedMinutes,summary.totalPunches,attendanceRule,leave),...summary};
+  }
   async function handle(req: Request, res: Response) {
     try {
       const path = req.path.replace(/^\/api/, "").replace(/\/$/, "") || "/";
@@ -941,6 +967,20 @@ export async function createApp(
           };
         });
         return res.json(result);
+      }
+      if (path === "/attendance/daily" && method === "GET") {
+        must(a, "attendance.read");
+        const requestedDate = req.query.date === undefined ? null : date.parse(String(req.query.date));
+        return res.json(await scope(a, async (q) => {
+          const visible = (await q.query("SELECT id FROM employees WHERE status='active' AND ($1::uuid IS NULL OR company_id=$1) ORDER BY name,id LIMIT 251", [company])).rows;
+          if (visible.length > 250) bad(422, "Select a company to view a roster of at most 250 employees");
+          const roster = [];
+          for (const row of visible) {
+            const detail = await attendanceForEmployee(q, a, row.id, requestedDate);
+            roster.push({employeeId: detail.employee.id, code: detail.employee.code, name: detail.employee.name, branchName: detail.employee.branchName, date: detail.date, status: detail.status, workedMinutes: detail.workedMinutes, totalPunches: detail.totalPunches, firstIn: detail.firstIn, lastOut: detail.lastOut, policyName: detail.policyName, shiftCode: detail.shift?.code || null});
+          }
+          return roster;
+        }));
       }
       if (path === "/attendance" && method === "GET") {
         must(a, "attendance.read");
